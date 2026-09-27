@@ -15,6 +15,12 @@ const TAP_MAX_MOVEMENT_PX = 6;
 const CAMERA_ANIM_MS = 700;
 const KEY_PAN_STEP = 0.06;
 
+// Momentum (fling) panning: after releasing a fast drag, the map keeps gliding and decays,
+// like a native map app. Velocities are tracked in screen pixels/ms during the drag.
+const MOMENTUM_MIN_VELOCITY = 0.03; // px/ms below this, a release doesn't start any glide
+const MOMENTUM_STOP_VELOCITY = 0.01; // px/ms below this, an ongoing glide is considered stopped
+const MOMENTUM_FRICTION = 2.6; // higher = stops sooner
+
 function easeOutCubic(t: number): number {
   return 1 - Math.pow(1 - t, 3);
 }
@@ -38,6 +44,7 @@ export function FlightCanvas({ onFrame, onSelectAirport }: Props) {
 
   const pendingZoomFactorRef = useRef(1);
   const pendingPanDeltaRef = useRef({ x: 0, y: 0 });
+  const momentumRef = useRef({ vx: 0, vy: 0 }); // screen px/ms
 
   const [tooltip, setTooltip] = useState<HitTarget | null>(null);
 
@@ -62,6 +69,7 @@ export function FlightCanvas({ onFrame, onSelectAirport }: Props) {
       const deltaSeconds = (timestamp - lastTimestampRef.current) / 1000;
       lastTimestampRef.current = timestamp;
 
+      const rect = canvas!.getBoundingClientRect();
       const s0 = useFlightStore.getState();
 
       if (s0.pendingCameraTarget && !cameraAnimRef.current.active) {
@@ -89,8 +97,10 @@ export function FlightCanvas({ onFrame, onSelectAirport }: Props) {
       } else {
         const manualPanRequested = pendingPanDeltaRef.current.x !== 0 || pendingPanDeltaRef.current.y !== 0;
         const manualZoomRequested = pendingZoomFactorRef.current !== 1;
+        const momentumMagnitude = Math.hypot(momentumRef.current.vx, momentumRef.current.vy);
 
         if (manualPanRequested || manualZoomRequested) {
+          momentumRef.current = { vx: 0, vy: 0 }; // fresh input always wins over any leftover glide
           if (useFlightStore.getState().followFlightId) useFlightStore.getState().setFollowFlight(null);
 
           if (manualZoomRequested) {
@@ -103,7 +113,18 @@ export function FlightCanvas({ onFrame, onSelectAirport }: Props) {
             s.setPan(pendingPanDeltaRef.current.x, pendingPanDeltaRef.current.y);
             pendingPanDeltaRef.current = { x: 0, y: 0 };
           }
+        } else if (momentumMagnitude > MOMENTUM_STOP_VELOCITY) {
+          if (useFlightStore.getState().followFlightId) useFlightStore.getState().setFollowFlight(null);
+          const s = useFlightStore.getState();
+          const radius = computeOuterRadiusPx(rect.width, rect.height, s.zoomScale);
+          const dxPx = momentumRef.current.vx * (deltaSeconds * 1000);
+          const dyPx = momentumRef.current.vy * (deltaSeconds * 1000);
+          s.setPan(dxPx / radius, dyPx / radius);
+          const decay = Math.exp(-MOMENTUM_FRICTION * deltaSeconds);
+          momentumRef.current.vx *= decay;
+          momentumRef.current.vy *= decay;
         } else {
+          momentumRef.current = { vx: 0, vy: 0 };
           const followId = useFlightStore.getState().followFlightId;
           if (followId) {
             const flight = useFlightStore.getState().virtualFlights.find((f) => f.id === followId);
@@ -128,7 +149,6 @@ export function FlightCanvas({ onFrame, onSelectAirport }: Props) {
       }
       state.pruneExpiredVirtualFlights();
 
-      const rect = canvas!.getBoundingClientRect();
       const current = useFlightStore.getState();
       const output = renderFlightMap(ctx!, rect.width, rect.height, {
         date: current.date,
@@ -167,6 +187,9 @@ export function FlightCanvas({ onFrame, onSelectAirport }: Props) {
     let dragStartClientX = 0;
     let dragStartClientY = 0;
     let dragTotalMovementPx = 0;
+    // Recent single-finger move samples, used to compute a release velocity for momentum.
+    let velocitySamples: { vx: number; vy: number }[] = [];
+    let lastMoveTime = 0;
 
     function findNearestTarget(clientX: number, clientY: number): HitTarget | null {
       const rect = canvas!.getBoundingClientRect();
@@ -203,6 +226,9 @@ export function FlightCanvas({ onFrame, onSelectAirport }: Props) {
         dragStartClientY = e.clientY;
         dragTotalMovementPx = 0;
         lastMidpoint = { x: e.clientX, y: e.clientY };
+        velocitySamples = [];
+        lastMoveTime = dragStartTime;
+        momentumRef.current = { vx: 0, vy: 0 }; // a new touch always stops any ongoing glide
       } else if (activePointers.size === 2) {
         lastPinchDist = pinchDistance();
         lastMidpoint = pinchMidpoint();
@@ -230,9 +256,19 @@ export function FlightCanvas({ onFrame, onSelectAirport }: Props) {
         return;
       }
 
+      const dxPx = e.clientX - lastMidpoint.x;
+      const dyPx = e.clientY - lastMidpoint.y;
       dragTotalMovementPx = Math.hypot(e.clientX - dragStartClientX, e.clientY - dragStartClientY);
-      pendingPanDeltaRef.current.x += (e.clientX - lastMidpoint.x) / radius;
-      pendingPanDeltaRef.current.y += (e.clientY - lastMidpoint.y) / radius;
+      pendingPanDeltaRef.current.x += dxPx / radius;
+      pendingPanDeltaRef.current.y += dyPx / radius;
+
+      const now = performance.now();
+      const dt = now - lastMoveTime;
+      if (dt > 0) {
+        velocitySamples.push({ vx: dxPx / dt, vy: dyPx / dt });
+        if (velocitySamples.length > 5) velocitySamples.shift();
+      }
+      lastMoveTime = now;
       lastMidpoint = { x: e.clientX, y: e.clientY };
     }
 
@@ -248,6 +284,14 @@ export function FlightCanvas({ onFrame, onSelectAirport }: Props) {
         if (target?.kind === 'airport') onSelectAirport?.(target.refId);
       }
 
+      if (!isTap && activePointers.size === 0 && velocitySamples.length > 0) {
+        const avgVx = velocitySamples.reduce((s, v) => s + v.vx, 0) / velocitySamples.length;
+        const avgVy = velocitySamples.reduce((s, v) => s + v.vy, 0) / velocitySamples.length;
+        if (Math.hypot(avgVx, avgVy) > MOMENTUM_MIN_VELOCITY) {
+          momentumRef.current = { vx: avgVx, vy: avgVy };
+        }
+      }
+
       if (activePointers.size === 1) {
         const [remaining] = activePointers.values();
         lastMidpoint = remaining;
@@ -260,6 +304,7 @@ export function FlightCanvas({ onFrame, onSelectAirport }: Props) {
 
     function onWheel(e: WheelEvent) {
       e.preventDefault();
+      momentumRef.current = { vx: 0, vy: 0 };
       pendingZoomFactorRef.current *= e.deltaY > 0 ? 0.9 : 1.1;
     }
 

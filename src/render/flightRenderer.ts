@@ -293,22 +293,35 @@ function drawLiveFlight(
   });
 }
 
-interface AircraftProfile { sizeScale: number; wingScale: number; color: string; }
+interface AircraftProfile { sizeScale: number; wingScale: number; }
 
 const AIRCRAFT_PROFILES: Record<AircraftCategory, AircraftProfile> = {
-  narrowbody: { sizeScale: 1.0, wingScale: 1.0, color: '#38bdf8' },
-  widebody: { sizeScale: 1.3, wingScale: 1.25, color: '#818cf8' },
-  regional: { sizeScale: 0.75, wingScale: 0.85, color: '#34d399' },
-  private: { sizeScale: 0.6, wingScale: 0.6, color: '#f472b6' },
-  cargo: { sizeScale: 1.15, wingScale: 1.05, color: '#f59e0b' },
+  narrowbody: { sizeScale: 1.0, wingScale: 1.0 },
+  widebody: { sizeScale: 1.3, wingScale: 1.25 },
+  regional: { sizeScale: 0.75, wingScale: 0.85 },
+  private: { sizeScale: 0.6, wingScale: 0.6 },
+  cargo: { sizeScale: 1.15, wingScale: 1.05 },
 };
 
+/** A more recognizable top-down airliner silhouette: pointed nose, swept main wings, a
+ * smaller swept tail (horizontal stabilizer), and a small fin nub at the very tail. Still a
+ * simplified vector path (not real SVG artwork), but reads as "an airplane" at a glance now
+ * rather than a generic kite/arrow shape. */
 function buildPlanePath(wingScale: number): [number, number][] {
+  const wingSpan = 8 * wingScale;
+  const tailSpan = 3.6 * wingScale;
   const rightSide: [number, number][] = [
-    [1, -6], [1, -2], [7 * wingScale, 1], [1.6, 2], [1.6, 6], [3.2 * wingScale, 8.5], [0.8, 7.2],
+    [0.9, -6.5],      // nose taper into fuselage
+    [0.9, -1.2],      // fuselage just ahead of the main wing
+    [wingSpan, 1.8],  // main wingtip (swept back)
+    [1.7, 3.0],       // wing trailing edge back to fuselage
+    [1.7, 6.4],       // fuselage running back toward the tail
+    [tailSpan, 8.2],  // horizontal stabilizer tip
+    [1.0, 9.0],        // stabilizer trailing edge back to fuselage
+    [0.5, 9.6],       // tail cone taper
   ];
   const leftSide: [number, number][] = rightSide.slice().reverse().map(([x, y]) => [-x, y]);
-  return [[0, -10], ...rightSide, [0, 9], ...leftSide];
+  return [[0, -10], ...rightSide, [0, 10.3], ...leftSide];
 }
 
 function hexToRgb(hex: string): [number, number, number] {
@@ -347,6 +360,10 @@ function drawGlowDot(ctx: CanvasRenderingContext2D, x: number, y: number, color:
 }
 
 const AIRCRAFT_BASE_SCALE = 1.9;
+// No more per-category paint colors — every aircraft is white by day and light gray at
+// night, exactly as asked, regardless of size/category.
+const DAY_COLOR = '#f4f5f7';
+const NIGHT_COLOR = '#8b929c';
 
 function drawAircraftIcon(
   ctx: CanvasRenderingContext2D, p: ProjectedPoint2D, headingDeg: number,
@@ -363,13 +380,13 @@ function drawAircraftIcon(
   ctx.rotate((rotationDeg * Math.PI) / 180);
   ctx.scale(scale, scale);
 
-  ctx.fillStyle = nightFactor > 0 ? mixColor(profile.color, '#12131a', nightFactor * 0.5) : profile.color;
+  ctx.fillStyle = mixColor(DAY_COLOR, NIGHT_COLOR, nightFactor);
   ctx.beginPath();
   path.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
   ctx.closePath();
   ctx.fill();
 
-  ctx.strokeStyle = 'rgba(5, 7, 13, 0.6)';
+  ctx.strokeStyle = 'rgba(20, 22, 28, 0.55)';
   ctx.lineWidth = 0.4;
   ctx.stroke();
 
