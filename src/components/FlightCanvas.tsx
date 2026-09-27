@@ -216,6 +216,7 @@ export function FlightCanvas({ onFrame, onSelectAirport }: Props) {
     }
 
     function onPointerDown(e: PointerEvent) {
+      e.preventDefault();
       canvas!.setPointerCapture(e.pointerId);
       activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (e.pointerType !== 'mouse') setTooltip(findNearestTarget(e.clientX, e.clientY));
@@ -240,6 +241,7 @@ export function FlightCanvas({ onFrame, onSelectAirport }: Props) {
         if (e.pointerType === 'mouse') setTooltip(findNearestTarget(e.clientX, e.clientY));
         return;
       }
+      e.preventDefault();
       activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
       const rect = canvas!.getBoundingClientRect();
@@ -324,8 +326,8 @@ export function FlightCanvas({ onFrame, onSelectAirport }: Props) {
       e.preventDefault();
     }
 
-    canvas.addEventListener('pointerdown', onPointerDown);
-    canvas.addEventListener('pointermove', onPointerMove);
+    canvas.addEventListener('pointerdown', onPointerDown, { passive: false });
+    canvas.addEventListener('pointermove', onPointerMove, { passive: false });
     canvas.addEventListener('pointerup', onPointerUp);
     canvas.addEventListener('pointercancel', onPointerUp);
     canvas.addEventListener('pointerleave', onPointerLeave);
