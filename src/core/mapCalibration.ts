@@ -1,7 +1,4 @@
-export interface PixelPoint {
-  x: number;
-  y: number;
-}
+export interface PixelPoint { x: number; y: number; }
 
 export interface MapCalibration {
   imageNaturalWidth: number;
@@ -15,13 +12,8 @@ export interface MapCalibration {
   rotationNudgeDeg: number;
 }
 
-const STORAGE_KEY = 'astro-clock-map-calibration-v1';
+const STORAGE_KEY = 'flight-clock-map-calibration-v1';
 
-/**
- * معايرة افتراضية مُضمَّنة في الكود نفسه (وليست في localStorage) — هي التي يراها كل زوار
- * الموقع الفعليين. مأخوذة من معايرة فعلية أجراها المطوّر عبر calibrate.html ونُسخت هنا.
- * لتحديثها لاحقاً: كرّر نفس خطوات المعايرة ثم زر النسخ 📋، والصق الناتج هنا من جديد.
- */
 export const DEFAULT_CALIBRATION: MapCalibration | null = {
   imageNaturalWidth: 3099,
   imageNaturalHeight: 3095,
@@ -35,29 +27,19 @@ export const DEFAULT_CALIBRATION: MapCalibration | null = {
 };
 
 export function saveCalibration(cal: MapCalibration) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(cal));
-  } catch {
-    /* تجاهل بيئات بلا localStorage */
-  }
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(cal)); } catch { /* ignore */ }
 }
 
 export function loadSavedCalibration(): MapCalibration | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) return JSON.parse(raw) as MapCalibration;
-  } catch {
-    /* تجاهل */
-  }
+  } catch { /* ignore */ }
   return DEFAULT_CALIBRATION;
 }
 
 export function clearCalibration() {
-  try {
-    localStorage.removeItem(STORAGE_KEY);
-  } catch {
-    /* تجاهل */
-  }
+  try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
 }
 
 function dist(a: PixelPoint, b: PixelPoint): number {
@@ -84,8 +66,6 @@ export function greenwichBearingDeg(cal: MapCalibration): number {
   return ((deg % 360) + 360) % 360;
 }
 
-/** ينسخ بيانات المعايرة الحالية كنص JSON جاهز للصق مباشرة كقيمة DEFAULT_CALIBRATION أعلاه —
- * يُستخدم من زر "نسخ بيانات المعايرة" في MapCalibrator.tsx. */
 export function exportCalibrationAsCode(cal: MapCalibration): string {
   return JSON.stringify(cal, null, 2);
 }

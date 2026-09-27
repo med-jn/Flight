@@ -1,24 +1,24 @@
 import { useRef, useState } from 'react';
 import { X, Check, RotateCcw, Copy, ClipboardCheck } from 'lucide-react';
-import { useSimulationStore } from '../state/store';
+import { useFlightStore } from '../state/store';
 import { exportCalibrationAsCode, type PixelPoint, type MapCalibration } from '../core/mapCalibration';
 
 type StepKey = 'poleP' | 'cancerP' | 'equatorP' | 'capricornP' | 'greenwichP';
 
 const STEPS: { key: StepKey; title: string; hint: string; color: string }[] = [
-  { key: 'poleP', title: 'القطب الشمالي', hint: 'انقر على مركز القطب الشمالي في الصورة (نقطة واحدة تماماً)', color: '#38bdf8' },
-  { key: 'cancerP', title: 'مدار السرطان', hint: 'انقر أي نقطة تقع بالضبط على خط مدار السرطان', color: '#facc15' },
-  { key: 'equatorP', title: 'خط الاستواء', hint: 'انقر أي نقطة تقع بالضبط على خط الاستواء', color: '#4ade80' },
-  { key: 'capricornP', title: 'مدار الجدي', hint: 'انقر أي نقطة تقع بالضبط على خط مدار الجدي', color: '#fb923c' },
-  { key: 'greenwichP', title: 'خط غرينتش', hint: 'انقر أي نقطة تقع على خط طول غرينتش (0°) بين القطب والحافة', color: '#f472b6' },
+  { key: 'poleP', title: 'North Pole', hint: 'Click exactly on the North Pole in the image', color: '#38bdf8' },
+  { key: 'cancerP', title: 'Tropic of Cancer', hint: 'Click any point exactly on the Tropic of Cancer', color: '#facc15' },
+  { key: 'equatorP', title: 'Equator', hint: 'Click any point exactly on the equator', color: '#4ade80' },
+  { key: 'capricornP', title: 'Tropic of Capricorn', hint: 'Click any point exactly on the Tropic of Capricorn', color: '#fb923c' },
+  { key: 'greenwichP', title: 'Greenwich meridian', hint: 'Click any point on the 0° meridian, between the pole and the edge', color: '#f472b6' },
 ];
 
 const IMAGE_SRC = `${import.meta.env.BASE_URL}images/earth.jpeg`;
 
 export function MapCalibrator() {
-  const cancelCalibrating = useSimulationStore((s) => s.cancelCalibrating);
-  const finishCalibrating = useSimulationStore((s) => s.finishCalibrating);
-  const existing = useSimulationStore((s) => s.calibration);
+  const cancelCalibrating = useFlightStore((s) => s.cancelCalibrating);
+  const finishCalibrating = useFlightStore((s) => s.finishCalibrating);
+  const existing = useFlightStore((s) => s.calibration);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
@@ -71,7 +71,6 @@ export function MapCalibrator() {
     return { x: offsetX + p.x * scale, y: offsetY + p.y * scale };
   }
 
-  /** يبني كائن المعايرة الكامل من النقاط الحالية (أو null إن لم تكتمل بعد) */
   function buildCalibration(): MapCalibration | null {
     if (!points.poleP || !points.cancerP || !points.equatorP || !points.capricornP || !points.greenwichP) {
       return null;
@@ -104,10 +103,10 @@ export function MapCalibrator() {
           setCopied(true);
           setTimeout(() => setCopied(false), 2000);
         },
-        () => window.prompt('انسخ النص التالي يدوياً وأرسله لي:', text)
+        () => window.prompt('Copy this text manually and send it to your developer:', text)
       );
     } else {
-      window.prompt('انسخ النص التالي يدوياً وأرسله لي:', text);
+      window.prompt('Copy this text manually and send it to your developer:', text);
     }
   }
 
@@ -122,27 +121,27 @@ export function MapCalibrator() {
     <div className="calibrator-overlay">
       <div className="calibrator-header">
         <div className="calibrator-title">
-          {done ? 'راجع النقاط ثم أكّد' : `الخطوة ${stepIndex + 1} من ${STEPS.length}: ${currentStep.title}`}
+          {done ? 'Review the points, then confirm' : `Step ${stepIndex + 1} of ${STEPS.length}: ${currentStep.title}`}
         </div>
         <div className="calibrator-actions">
           {canCopy && (
             <button
-              className="icon-btn"
-              title="نسخ بيانات المعايرة (لإرسالها كقيمة افتراضية دائمة)"
+              type="button" className="icon-btn"
+              title="Copy calibration data (to make it the permanent default)"
               onClick={handleCopy}
             >
               {copied ? <ClipboardCheck size={18} /> : <Copy size={18} />}
             </button>
           )}
-          <button className="icon-btn" title="إعادة من البداية" onClick={restart}>
+          <button type="button" className="icon-btn" title="Start over" onClick={restart}>
             <RotateCcw size={18} />
           </button>
           {done && (
-            <button className="icon-btn active" title="تأكيد المعايرة (لجهازي فقط)" onClick={handleConfirm}>
+            <button type="button" className="icon-btn active" title="Confirm (this device only)" onClick={handleConfirm}>
               <Check size={18} />
             </button>
           )}
-          <button className="icon-btn" title="إلغاء" onClick={cancelCalibrating}>
+          <button type="button" className="icon-btn" title="Cancel" onClick={cancelCalibrating}>
             <X size={18} />
           </button>
         </div>
@@ -151,13 +150,14 @@ export function MapCalibrator() {
       {!done && <div className="calibrator-hint">{currentStep.hint}</div>}
       {done && (
         <div className="calibrator-hint">
-          اضغط أيقونة النسخ 📋 أعلاه وأرسل النص لي كي أضعه معايرة افتراضية دائمة يراها كل
-          الزوار، أو أيقونة ✓ لحفظها على جهازك أنت فقط للتجربة السريعة.
+          Press the copy icon 📋 above and send the text to your developer so it becomes the
+          permanent default everyone sees, or the ✓ icon to save it on this device only for a
+          quick test.
         </div>
       )}
 
       <div className="calibrator-canvas" ref={containerRef} onClick={handleClick}>
-        <img ref={imgRef} src={IMAGE_SRC} alt="خريطة الأرض" onLoad={handleImageLoad} draggable={false} />
+        <img ref={imgRef} src={IMAGE_SRC} alt="Earth map" onLoad={handleImageLoad} draggable={false} />
         {STEPS.map(({ key, color }) => {
           const p = points[key];
           if (!p) return null;

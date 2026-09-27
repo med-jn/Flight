@@ -1,9 +1,7 @@
-import type { Degrees } from '../types/astro';
-
 /**
- * إسقاط سمتي تساوي البعد (Azimuthal Equidistant)، مركزه القطب الشمالي/نجم الشمال،
- * كما لو كان الناظر معلّقاً في الفضاء فوق القطب مباشرة ينظر إلى الكرة بأكملها.
- * نصف القطر يتناسب خطياً مع البعد القطبي (Colatitude): r = (colatitude/180) × outerRadius.
+ * Azimuthal equidistant projection centered on the North Pole/Pole Star, as if the viewer
+ * hovered in space directly above the pole looking down at the whole globe.
+ * Radius scales linearly with colatitude: r = (colatitude/180) x outerRadius.
  */
 export interface PolarMapConfig {
   centerX: number;
@@ -19,37 +17,28 @@ export interface ProjectedPoint2D {
 
 const DEG2RAD = Math.PI / 180;
 
-/**
- * بطلب صريح: خط غرينتش (0°) يشير الآن إلى الأسفل بدل الأعلى — تماماً كالساعة السادسة على
- * ساعة حائط بدل الثانية عشرة. هذه إزاحة زاوية ثابتة واحدة تُطبَّق هنا فقط، فتنعكس تلقائياً
- * على كل الطبقات التي تمر من هذه الدالة (القارات، المدارات، خطوط الطول، الشبكة، النجوم
- * والكواكب عبر raDecToScreen) دفعة واحدة ومتّسقة. الصورة المعايَرة (drawCalibratedEarthImage)
- * تتبع نفس الإزاحة عبر تعديل مطابق منفصل في skyRenderer.ts لأنها لا تمر من هذه الدالة.
- */
 const GREENWICH_DOWN_OFFSET_DEG = 180;
 
-/** نسبة نصف قطر "قبة السماء" إلى أصغر بُعدَي الكانفس عند التكبير 1x — ثابت تصميم واحد يُستخدم
- * هنا (عبر computeOuterRadiusPx) وفي skyRenderer.ts معاً، حتى لا يتكرر الرقم السحري 0.46
- * في مكانين قد ينحرفان عن بعضهما مستقبلاً وتختل معه دقة حساب مناطق اللمس (حافة/داخل). */
-export const BASE_RADIUS_FRACTION = 0.46;
-
 /**
- * نصف قطر القبة الفعلي بالبكسل لحجم كانفس ومستوى تكبير مُعطى — نفس الصيغة المستخدمة في
- * renderSky بالضبط. مصدر واحد للحقيقة يستخدمه أيضاً SkyCanvas.tsx عند تحديد ما إذا كانت
- * نقطة اللمس داخل "منطقة الحافة" (تدوير المشهد) أو "المنطقة الداخلية" (سحب الزمن)، دون أي
- * تأثير على دقة الإسقاط الفلكي نفسه — هذه الدالة لا تُستخدم في حساب موضع أي جرم سماوي.
+ * The dome radius is measured against the viewport's HALF-DIAGONAL, not its smaller
+ * dimension. This is the fix for the map's circular edge showing up as black voids on wide
+ * screens or when panning: since every corner of a rectangle is exactly half-diagonal away
+ * from its center, a circle of this radius always fully covers the rectangle when centered —
+ * regardless of aspect ratio. zoomScale is a direct multiplier on top of that: at
+ * ZOOM_MIN_SCALE (see core/zoom.ts) the circle just barely reaches all four corners, so the
+ * map always fills the screen edge-to-edge with no visible boundary.
  */
 export function computeOuterRadiusPx(width: number, height: number, zoomScale: number): number {
-  return Math.min(width, height) * BASE_RADIUS_FRACTION * zoomScale;
+  return (Math.hypot(width, height) / 2) * zoomScale;
 }
 
 /**
- * إسقاط (خط عرض، خط طول جغرافي) إلى نقطة شاشة — للقارات والمدارات وخطوط الطول الثابتة
- * والشمس والقمر والنجوم (عبر raDecToScreen) — كل الطبقات تمر من هنا فتبقى متطابقة دائماً.
+ * Projects (latitude, longitude) to a screen point — used for land, meridians, airports and
+ * flight paths alike, so every layer stays perfectly aligned.
  */
 export function latLonToScreen(
-  latDeg: Degrees,
-  lonDeg: Degrees,
+  latDeg: number,
+  lonDeg: number,
   config: PolarMapConfig
 ): ProjectedPoint2D {
   const colatitudeDeg = 90 - latDeg;
@@ -61,19 +50,27 @@ export function latLonToScreen(
 }
 
 /**
- * إسقاط جرم سماوي بإحداثياته الاستوائية (RA بالساعات، Dec) — يُستخدم بنفس صيغة latLonToScreen
- * تماماً، لكن "خط الطول" هنا هو زاوية غرينتش الساعية (GHA) بدل خط الطول الجغرافي الثابت،
- * فتدور الأجرام حول القطب مع دوران الأرض الحقيقي (GMST) بينما تبقى القارات ثابتة.
+ * The on-screen compass heading (degrees, clockwise, 0 = up) of "true north" as seen from a
+ * given projected point. On this polar azimuthal-equidistant projection, meridians are
+ * straight lines through the center, so "north" from any point is exactly the direction
+ * toward the center — this is what lets us orient aircraft icons correctly.
  */
-export function raDecToScreen(
-  raHours: number,
-  decDeg: Degrees,
-  gmstDeg: Degrees,
-  config: PolarMapConfig
-): ProjectedPoint2D {
-  const ghaDeg = normalizeDeg(gmstDeg - raHours * 15);
-  const subPointLonDeg = normalizeDeg(-ghaDeg);
-  return latLonToScreen(decDeg, subPointLonDeg, config);
+export function screenBearingToCenterDeg(p: ProjectedPoint2D, config: PolarMapConfig): number {
+  const dx = config.centerX - p.x;
+  const dy = config.centerY - p.y;
+  return normalizeDeg(Math.atan2(dx, -dy) * (180 / Math.PI));
+}
+
+/**
+ * The pan fraction (panX, panY as used by the store/renderer) that brings a given
+ * (lat, lon) to the exact center of the viewport, at zero scene rotation. This works out to
+ * be resolution-independent — the same fraction centers the point on any canvas size — which
+ * is why it can be computed here directly with a unit-radius config, without knowing the
+ * actual canvas dimensions.
+ */
+export function computePanForTarget(latDeg: number, lonDeg: number): { panX: number; panY: number } {
+  const p = latLonToScreen(latDeg, lonDeg, { centerX: 0, centerY: 0, outerRadiusPx: 1 });
+  return { panX: -p.x, panY: -p.y };
 }
 
 function normalizeDeg(deg: number): number {

@@ -1,0 +1,63 @@
+-- Run this in the Supabase SQL editor (Dashboard -> SQL Editor -> New query).
+
+create extension if not exists "pgcrypto";
+
+-- Live flight positions, refreshed periodically by a server-side job (a Supabase Edge
+-- Function) that polls the OpenSky API. The browser (anon key) only ever reads this table.
+create table if not exists public.live_flights (
+  icao24 text primary key,
+  callsign text,
+  origin_country text,
+  latitude_deg double precision not null,
+  longitude_deg double precision not null,
+  heading_deg double precision,
+  altitude_m double precision,
+  velocity_ms double precision,
+  on_ground boolean not null default false,
+  last_contact bigint not null,
+  updated_at timestamptz not null default now()
+);
+
+-- User-created virtual flights, saved so they persist across devices and reloads.
+create table if not exists public.virtual_flights (
+  id uuid primary key default gen_random_uuid(),
+  origin_icao text not null,
+  destination_icao text not null,
+  departure_time timestamptz not null,
+  arrival_time timestamptz not null,
+  callsign text,
+  created_at timestamptz not null default now()
+);
+
+alter table public.live_flights enable row level security;
+alter table public.virtual_flights enable row level security;
+
+-- Anyone (including anonymous visitors) can read live flight positions.
+create policy "Public read access to live flights"
+  on public.live_flights for select
+  using (true);
+
+-- No insert/update/delete policy is granted here on purpose: only the Edge Function, using
+-- the service_role key (which bypasses RLS), is allowed to write to this table.
+
+-- Anyone can read virtual flights, so every visitor's map can show them.
+create policy "Public read access to virtual flights"
+  on public.virtual_flights for select
+  using (true);
+
+-- Anyone can create or delete a virtual flight. This is an open write policy for anonymous
+-- visitors — fine to start with, but consider adding authentication and/or rate limiting
+-- later if this table becomes a target for spam.
+create policy "Public insert access to virtual flights"
+  on public.virtual_flights for insert
+  with check (true);
+
+create policy "Public delete access to virtual flights"
+  on public.virtual_flights for delete
+  using (true);
+
+create index if not exists live_flights_updated_at_idx on public.live_flights (updated_at);
+
+-- Optional: enable Realtime so the frontend can subscribe to live_flights changes instead of
+-- polling it. Uncomment once you're ready to use supabase.channel(...) in the client.
+-- alter publication supabase_realtime add table public.live_flights;

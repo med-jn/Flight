@@ -1,8 +1,9 @@
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 
-// https://vite.dev/config/
+// NOTE: adjust `base` to match your actual deployment path (e.g. '/' for a root domain,
+// '/flight/' for a subpath like the astro clock used '/najm/').
 export default defineConfig({
-  base: '/najm/',
+  base: '/',
   plugins: [react()],
 })

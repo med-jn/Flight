@@ -1,345 +1,352 @@
-import { useState, type CSSProperties, type ElementType } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
-  Play, Pause, Clock, MapPinned, LocateFixed, Globe2, Contrast, Orbit, Route, Radar,
-  CircleDot, Star, Disc, Tag, Compass, Sparkles, X, Plus, Minus, RotateCcw,
+  Play, Pause, Plus, Minus, RotateCcw, Globe2, Contrast, Route, Radar, Tag, Trash2,
+  PlaneTakeoff, MapPin, X, ShieldAlert, BadgeCheck, Crosshair, LandPlot,
 } from 'lucide-react';
-import { SPEED_LABELS_AR, useSimulationStore, type LayerToggles } from '../state/store';
-import { ZODIAC_ORDER, type ZodiacKey } from '../core/zodiac';
-import { getAllLunarMansions } from '../core/mansions';
+import { useFlightStore, SPEED_LABELS, type LayerToggles } from '../state/store';
+import { AirportSearch } from './AirportSearch';
+import { FlightRouteSearch } from './FlightRouteSearch';
+import { getAirportByIcao } from '../core/airportCatalog';
+import { greatCircleDistanceKm } from '../core/greatCircle';
+import { isRealRoute, getRealDestinationsFrom } from '../core/routeCatalog';
+import { AIRCRAFT_RANGE_KM, isRouteFeasible, suggestFeasibleCategory } from '../core/aircraftRange';
+import { suggestAlternates } from '../core/alternateAirports';
+import { estimateTypicalDurationHours } from '../core/constants';
+import { scaleToPercent } from '../core/zoom';
+import { AIRCRAFT_CATEGORY_LABELS, type Airport, type AircraftCategory } from '../types/flight';
 
-const ZODIAC_NAMES_AR: Record<string, string> = {
-  Aries: 'الحمل', Taurus: 'الثور', Gemini: 'الجوزاء', Cancer: 'السرطان',
-  Leo: 'الأسد', Virgo: 'العذراء', Libra: 'الميزان', Scorpius: 'العقرب',
-  Sagittarius: 'القوس', Capricornus: 'الجدي', Aquarius: 'الدلو', Pisces: 'الحيتان',
-};
+type TabKey = 'layers' | 'airports' | 'flights';
 
-const GREGORIAN_MONTHS_AR = [
-  'يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو',
-  'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر',
-];
-
-function addToDateField(date: Date, field: 'year' | 'month' | 'day' | 'hour' | 'minute', delta: number): Date {
-  const d = new Date(date);
-  if (field === 'year') d.setFullYear(d.getFullYear() + delta);
-  else if (field === 'month') d.setMonth(d.getMonth() + delta);
-  else if (field === 'day') d.setDate(d.getDate() + delta);
-  else if (field === 'hour') d.setHours(d.getHours() + delta);
-  else d.setMinutes(d.getMinutes() + delta);
-  return d;
-}
-
-function formatHijri(date: Date): string {
-  try {
-    return new Intl.DateTimeFormat('ar-SA-u-ca-islamic-umalqura', {
-      year: 'numeric', month: 'long', day: 'numeric',
-    }).format(date);
-  } catch {
-    return '—';
-  }
-}
-
-const LAYER_ICONS: Record<keyof LayerToggles, ElementType> = {
-  land: Globe2, terminator: Contrast, tropics: Orbit, meridians: Route,
-  equatorialGrid: Radar, mansions: Sparkles, ecliptic: CircleDot,
-  stars: Star, planets: Disc, labels: Tag, observerMarker: MapPinned,
+const LAYER_ICONS: Record<keyof LayerToggles, typeof Globe2> = {
+  land: Globe2, terminator: Contrast, meridians: Route, liveFlights: Radar,
+  virtualFlights: PlaneTakeoff, labels: Tag,
 };
 
 const LAYER_TITLES: Record<keyof LayerToggles, string> = {
-  land: 'الأرض', terminator: 'ظل الليل والنهار', tropics: 'المدارات الثلاثة', meridians: 'خطوط الطول',
-  equatorialGrid: 'الشبكة الاستوائية', mansions: 'منازل القمر', ecliptic: 'خط البروج',
-  stars: 'النجوم', planets: 'الكواكب', labels: 'الأسماء', observerMarker: 'موقعي',
+  land: 'Map', terminator: 'Day / night', meridians: 'Meridians',
+  liveFlights: 'Live flights (soon)', virtualFlights: 'Virtual flights', labels: 'Labels',
 };
-
-const LAYER_CAPTIONS: Record<keyof LayerToggles, string> = {
-  land: 'أرض', terminator: 'ظل', tropics: 'مدارات', meridians: 'طول',
-  equatorialGrid: 'شبكة', mansions: 'منازل', ecliptic: 'بروج',
-  stars: 'نجوم', planets: 'كواكب', labels: 'أسماء', observerMarker: 'موقعي',
-};
-
-const GROUND_KEYS: (keyof LayerToggles)[] = ['land', 'terminator', 'tropics', 'meridians', 'equatorialGrid', 'ecliptic'];
-const SKY_KEYS: (keyof LayerToggles)[] = ['stars', 'planets'];
-
-type PopoverKey = 'time' | 'observer' | 'ground' | 'sky' | 'zodiac' | 'mansions' | null;
-
-function StepperRow({ label, value, onDec, onInc }: { label: string; value: string; onDec: () => void; onInc: () => void }) {
-  return (
-    <div className="stepper-row">
-      <span className="stepper-label">{label}</span>
-      <div className="stepper-controls">
-        <button className="stepper-btn" onClick={onDec} aria-label={`إنقاص ${label}`}><Minus size={14} /></button>
-        <span className="stepper-value">{value}</span>
-        <button className="stepper-btn" onClick={onInc} aria-label={`زيادة ${label}`}><Plus size={14} /></button>
-      </div>
-    </div>
-  );
-}
-
-function LayerTile({ layerKey, active, onToggle }: { layerKey: keyof LayerToggles; active: boolean; onToggle: () => void }) {
-  const Icon = LAYER_ICONS[layerKey];
-  return (
-    <button className="layer-tile" aria-pressed={active} title={LAYER_TITLES[layerKey]} onClick={onToggle}>
-      <Icon size={17} />
-      <span>{LAYER_CAPTIONS[layerKey]}</span>
-    </button>
-  );
-}
 
 export function ControlsPanel() {
-  const [openPopover, setOpenPopover] = useState<PopoverKey>(null);
-  const [calendarMode, setCalendarMode] = useState<'gregorian' | 'hijri'>('gregorian');
+  const [tab, setTab] = useState<TabKey>('flights');
 
-  const {
-    date, isPlaying, speedIndex, observer, layers,
-    selectedZodiacs, selectedMansionIndices,
-    setDate, togglePlay, resetToNow, setSpeedIndex, setObserver, toggleLayer,
-    toggleZodiacSelection, clearZodiacSelection, toggleMansionSelection, clearMansionSelection,
-  } = useSimulationStore();
+  // ---- Store state (grouped by concern, not by tab, since a couple of pieces are used in
+  // the always-visible toolbar regardless of which tab is open) ----
+  const zoomScale = useFlightStore((s) => s.zoomScale);
+  const setZoom = useFlightStore((s) => s.setZoom);
+  const resetView = useFlightStore((s) => s.resetView);
+  const isPlaying = useFlightStore((s) => s.isPlaying);
+  const togglePlay = useFlightStore((s) => s.togglePlay);
+  const play = useFlightStore((s) => s.play);
+  const speedIndex = useFlightStore((s) => s.speedIndex);
+  const setSpeedIndex = useFlightStore((s) => s.setSpeedIndex);
+  const resetToNow = useFlightStore((s) => s.resetToNow);
 
-  const toggle = (key: PopoverKey) => setOpenPopover((prev) => (prev === key ? null : key));
+  const layers = useFlightStore((s) => s.layers);
+  const toggleLayer = useFlightStore((s) => s.toggleLayer);
 
-  const hasGroundExtra = layers.tropics || layers.meridians || layers.equatorialGrid || layers.ecliptic;
-  const hasSkyExtra = layers.stars || layers.planets;
-  const hasZodiacExtra = selectedZodiacs.length > 0;
-  const hasMansionExtra = selectedMansionIndices.length > 0 || layers.mansions;
+  const pinnedAirportIcaos = useFlightStore((s) => s.pinnedAirportIcaos);
+  const pinAirport = useFlightStore((s) => s.pinAirport);
+  const unpinAirport = useFlightStore((s) => s.unpinAirport);
+  const setSelectedAirport = useFlightStore((s) => s.setSelectedAirport);
+  const requestFlyTo = useFlightStore((s) => s.requestFlyTo);
 
-  const mansions = getAllLunarMansions();
+  const virtualFlights = useFlightStore((s) => s.virtualFlights);
+  const addVirtualFlight = useFlightStore((s) => s.addVirtualFlight);
+  const removeVirtualFlight = useFlightStore((s) => s.removeVirtualFlight);
+  const followFlightId = useFlightStore((s) => s.followFlightId);
+  const setFollowFlight = useFlightStore((s) => s.setFollowFlight);
+
+  // ---- Local "launch a flight" form state ----
+  const [origin, setOrigin] = useState<Airport | null>(null);
+  const [destination, setDestination] = useState<Airport | null>(null);
+  const [departure, setDeparture] = useState('');
+  const [duration, setDuration] = useState<number | null>(null);
+  const [aircraftType, setAircraftType] = useState<AircraftCategory>('narrowbody');
+  const [alternateIcaos, setAlternateIcaos] = useState<string[]>([]);
+
+  const distanceKm = useMemo(
+    () => (origin && destination
+      ? greatCircleDistanceKm(
+          { latitudeDeg: origin.latitudeDeg, longitudeDeg: origin.longitudeDeg },
+          { latitudeDeg: destination.latitudeDeg, longitudeDeg: destination.longitudeDeg }
+        )
+      : null),
+    [origin, destination]
+  );
+
+  const realRoute = origin && destination ? isRealRoute(origin.iata, destination.iata) : false;
+  const feasible = distanceKm !== null ? isRouteFeasible(distanceKm, aircraftType) : true;
+
+  useEffect(() => {
+    if (!origin || !destination) {
+      setAlternateIcaos([]);
+      setDuration(null);
+      return;
+    }
+    const d = greatCircleDistanceKm(
+      { latitudeDeg: origin.latitudeDeg, longitudeDeg: origin.longitudeDeg },
+      { latitudeDeg: destination.latitudeDeg, longitudeDeg: destination.longitudeDeg }
+    );
+    const match = getRealDestinationsFrom(origin.iata).find((r) => r.destinationIata === destination.iata);
+    setAircraftType(match ? match.aircraftType : suggestFeasibleCategory(d));
+    setDuration(estimateTypicalDurationHours(d));
+    const altCount = Math.min(3, Math.max(1, Math.round(d / 3000)));
+    setAlternateIcaos(suggestAlternates(origin, destination, altCount).map((a) => a.icao));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [origin?.icao, destination?.icao]);
+
+  function focusAirport(a: Airport) {
+    setSelectedAirport(a);
+    requestFlyTo(a.latitudeDeg, a.longitudeDeg, 100);
+  }
+
+  const canLaunch = !!origin && !!destination && feasible && alternateIcaos.length > 0 && duration != null;
+
+  function handleLaunch() {
+    if (!origin || !destination || !canLaunch || duration == null) return;
+    const dep = departure ? new Date(departure) : new Date(useFlightStore.getState().date);
+    const arr = new Date(dep.getTime() + duration * 3600 * 1000);
+    const id = crypto.randomUUID();
+    addVirtualFlight({
+      id,
+      originIcao: origin.icao,
+      destinationIcao: destination.icao,
+      departureTime: dep.toISOString(),
+      arrivalTime: arr.toISOString(),
+      callsign: `${origin.iata}${destination.iata}`,
+      aircraftType,
+      distanceKm: distanceKm ?? 0,
+      alternateIcaos,
+      isRealRoute: realRoute,
+    });
+    pinAirport(origin.icao);
+    pinAirport(destination.icao);
+    alternateIcaos.forEach(pinAirport);
+    if (!departure) play();
+    setFollowFlight(id);
+    requestFlyTo(origin.latitudeDeg, origin.longitudeDeg, 85);
+
+    setOrigin(null);
+    setDestination(null);
+    setDeparture('');
+    setDuration(null);
+    setAlternateIcaos([]);
+  }
 
   return (
-    <>
-      {openPopover && <button className="popover-backdrop" onClick={() => setOpenPopover(null)} aria-label="إغلاق" />}
-
-      <nav className="controls-panel" aria-label="لوحة تحكم المحاكي">
-        <div className="icon-bar">
-          {/* تشغيل/إيقاف — تبديل مباشر بلا نافذة */}
-          <div className="icon-item">
-            <button className="icon-trigger" data-active={isPlaying} onClick={togglePlay} title={isPlaying ? 'إيقاف' : 'تشغيل'}>
-              {isPlaying ? <Pause size={19} /> : <Play size={19} />}
-            </button>
-          </div>
-
-          {/* الوقت والتاريخ */}
-          <div className="icon-item">
-            <button className="icon-trigger" data-active={openPopover === 'time'} onClick={() => toggle('time')} title="الوقت والتاريخ">
-              <Clock size={19} />
-            </button>
-            {openPopover === 'time' && (
-              <div className="popover-panel" role="dialog" aria-label="الوقت والتاريخ">
-                <div className="popover-header">
-                  <Clock size={16} />
-                  <span className="popover-title-text">الوقت والتاريخ</span>
-                  <button className="popover-close" onClick={() => setOpenPopover(null)}><X size={16} /></button>
-                </div>
-                <div className="popover-body">
-                  <div className="calendar-toggle">
-                    <button aria-pressed={calendarMode === 'gregorian'} onClick={() => setCalendarMode('gregorian')}>ميلادي</button>
-                    <button aria-pressed={calendarMode === 'hijri'} onClick={() => setCalendarMode('hijri')}>هجري</button>
-                  </div>
-
-                  {calendarMode === 'gregorian' ? (
-                    <>
-                      <StepperRow label="السنة" value={String(date.getFullYear())}
-                        onDec={() => setDate(addToDateField(date, 'year', -1))}
-                        onInc={() => setDate(addToDateField(date, 'year', 1))} />
-                      <StepperRow label="الشهر" value={GREGORIAN_MONTHS_AR[date.getMonth()]}
-                        onDec={() => setDate(addToDateField(date, 'month', -1))}
-                        onInc={() => setDate(addToDateField(date, 'month', 1))} />
-                      <StepperRow label="اليوم" value={String(date.getDate())}
-                        onDec={() => setDate(addToDateField(date, 'day', -1))}
-                        onInc={() => setDate(addToDateField(date, 'day', 1))} />
-                    </>
-                  ) : (
-                    <div className="hijri-display">{formatHijri(date)}</div>
-                  )}
-
-                  <StepperRow label="الساعة" value={String(date.getHours()).padStart(2, '0')}
-                    onDec={() => setDate(addToDateField(date, 'hour', -1))}
-                    onInc={() => setDate(addToDateField(date, 'hour', 1))} />
-                  <StepperRow label="الدقيقة" value={String(date.getMinutes()).padStart(2, '0')}
-                    onDec={() => setDate(addToDateField(date, 'minute', -1))}
-                    onInc={() => setDate(addToDateField(date, 'minute', 1))} />
-
-                  <button className="btn-wide" onClick={resetToNow}>
-                    <RotateCcw size={16} /> الوقت الحالي
-                  </button>
-
-                  <div className="speed-row">
-                    <span className="speed-label">السرعة</span>
-                    <input
-                      type="range" min={0} max={6} step={1} value={speedIndex}
-                      onChange={(e) => setSpeedIndex(Number(e.target.value))}
-                      className="slider"
-                      style={{ '--p': `${(speedIndex / 6) * 100}%` } as CSSProperties}
-                    />
-                    <span className="speed-chip">{SPEED_LABELS_AR[speedIndex]}</span>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* الموقع والإحداثيات */}
-          <div className="icon-item">
-            <button className="icon-trigger" data-active={openPopover === 'observer'} onClick={() => toggle('observer')} title="الموقع والإحداثيات">
-              <MapPinned size={19} />
-            </button>
-            {openPopover === 'observer' && (
-              <div className="popover-panel" role="dialog" aria-label="الموقع والإحداثيات">
-                <div className="popover-header">
-                  <MapPinned size={16} />
-                  <span className="popover-title-text">الموقع والإحداثيات</span>
-                  <button className="popover-close" onClick={() => setOpenPopover(null)}><X size={16} /></button>
-                </div>
-                <div className="popover-body">
-                  <div className="coord-grid">
-                    <div className="field">
-                      <span className="field-label">خط العرض</span>
-                      <input type="number" step={0.01} value={observer.latitudeDeg}
-                        onChange={(e) => setObserver({ latitudeDeg: Number(e.target.value) })} className="coord-input" />
-                    </div>
-                    <div className="field">
-                      <span className="field-label">خط الطول</span>
-                      <input type="number" step={0.01} value={observer.longitudeDeg}
-                        onChange={(e) => setObserver({ longitudeDeg: Number(e.target.value) })} className="coord-input" />
-                    </div>
-                  </div>
-                  <button
-                    className="btn-wide"
-                    onClick={() => {
-                      if (!navigator.geolocation) return;
-                      navigator.geolocation.getCurrentPosition((pos) => {
-                        setObserver({ latitudeDeg: pos.coords.latitude, longitudeDeg: pos.coords.longitude });
-                      });
-                    }}
-                  >
-                    <LocateFixed size={16} /> استخدام موقعي الحالي
-                  </button>
-                  <button className="toggle-row" aria-pressed={layers.observerMarker} onClick={() => toggleLayer('observerMarker')}>
-                    <MapPinned size={16} />
-                    <span>إظهار علامة موقعي على الخريطة</span>
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* الأرض والشبكة */}
-          <div className="icon-item">
-            <button className="icon-trigger" data-active={openPopover === 'ground'} onClick={() => toggle('ground')} title="الأرض والشبكة">
-              <Globe2 size={19} />
-              {hasGroundExtra && <span className="badge-dot" />}
-            </button>
-            {openPopover === 'ground' && (
-              <div className="popover-panel" role="dialog" aria-label="الأرض والشبكة">
-                <div className="popover-header">
-                  <Globe2 size={16} />
-                  <span className="popover-title-text">الأرض والشبكة</span>
-                  <button className="popover-close" onClick={() => setOpenPopover(null)}><X size={16} /></button>
-                </div>
-                <div className="popover-body">
-                  <div className="layers-grid">
-                    {GROUND_KEYS.map((k) => (
-                      <LayerTile key={k} layerKey={k} active={layers[k]} onToggle={() => toggleLayer(k)} />
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* النجوم والكواكب */}
-          <div className="icon-item">
-            <button className="icon-trigger" data-active={openPopover === 'sky'} onClick={() => toggle('sky')} title="النجوم والكواكب">
-              <Star size={19} />
-              {hasSkyExtra && <span className="badge-dot" />}
-            </button>
-            {openPopover === 'sky' && (
-              <div className="popover-panel" role="dialog" aria-label="النجوم والكواكب">
-                <div className="popover-header">
-                  <Star size={16} />
-                  <span className="popover-title-text">النجوم والكواكب</span>
-                  <button className="popover-close" onClick={() => setOpenPopover(null)}><X size={16} /></button>
-                </div>
-                <div className="popover-body">
-                  <div className="layers-grid">
-                    {SKY_KEYS.map((k) => (
-                      <LayerTile key={k} layerKey={k} active={layers[k]} onToggle={() => toggleLayer(k)} />
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* الأسماء — تبديل مباشر بلا نافذة */}
-          <div className="icon-item">
-            <button className="icon-trigger" data-active={layers.labels} onClick={() => toggleLayer('labels')} title="إظهار الأسماء">
-              <Tag size={19} />
-            </button>
-          </div>
-
-          {/* الأبراج — اختيار متعدد */}
-          <div className="icon-item">
-            <button className="icon-trigger" data-active={openPopover === 'zodiac'} onClick={() => toggle('zodiac')} title="الأبراج">
-              <Compass size={19} />
-              {hasZodiacExtra && <span className="badge-dot" />}
-            </button>
-            {openPopover === 'zodiac' && (
-              <div className="popover-panel" role="dialog" aria-label="الأبراج">
-                <div className="popover-header">
-                  <Compass size={16} />
-                  <span className="popover-title-text">الأبراج</span>
-                  <button className="popover-close" onClick={() => setOpenPopover(null)}><X size={16} /></button>
-                </div>
-                <div className="popover-body">
-                  {selectedZodiacs.length > 0 && (
-                    <button className="clear-btn" onClick={clearZodiacSelection}>مسح التحديد ({selectedZodiacs.length})</button>
-                  )}
-                  <div className="select-list">
-                    {ZODIAC_ORDER.map((z: ZodiacKey) => (
-                      <button key={z} className="select-item" aria-pressed={selectedZodiacs.includes(z)} onClick={() => toggleZodiacSelection(z)}>
-                        {ZODIAC_NAMES_AR[z] ?? z}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* المنازل — اختيار متعدد */}
-          <div className="icon-item">
-            <button className="icon-trigger" data-active={openPopover === 'mansions'} onClick={() => toggle('mansions')} title="منازل القمر">
-              <Sparkles size={19} />
-              {hasMansionExtra && <span className="badge-dot" />}
-            </button>
-            {openPopover === 'mansions' && (
-              <div className="popover-panel" role="dialog" aria-label="منازل القمر">
-                <div className="popover-header">
-                  <Sparkles size={16} />
-                  <span className="popover-title-text">منازل القمر</span>
-                  <button className="popover-close" onClick={() => setOpenPopover(null)}><X size={16} /></button>
-                </div>
-                <div className="popover-body">
-                  <button className="toggle-row" aria-pressed={layers.mansions} onClick={() => toggleLayer('mansions')}>
-                    <Sparkles size={16} />
-                    <span>إظهار كل الأسماء على الخريطة</span>
-                  </button>
-                  {selectedMansionIndices.length > 0 && (
-                    <button className="clear-btn" onClick={clearMansionSelection}>مسح التحديد ({selectedMansionIndices.length})</button>
-                  )}
-                  <div className="select-list select-list-scroll">
-                    {mansions.map((m) => (
-                      <button key={m.index} className="select-item" aria-pressed={selectedMansionIndices.includes(m.index)} onClick={() => toggleMansionSelection(m.index)}>
-                        {m.nameAr}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
+    <div className="controls-panel">
+      {/* Always visible, regardless of tab — these apply to the map itself at any time. */}
+      <div className="panel-toolbar">
+        <div className="toolbar-group">
+          <button type="button" className="icon-btn" onClick={() => setZoom(zoomScale * 0.85)}>
+            <Minus size={15} />
+          </button>
+          <span className="toolbar-value">{Math.round(scaleToPercent(zoomScale))}%</span>
+          <button type="button" className="icon-btn" onClick={() => setZoom(zoomScale * 1.15)}>
+            <Plus size={15} />
+          </button>
+          <button type="button" className="icon-btn" onClick={resetView} title="Reset view">
+            <RotateCcw size={15} />
+          </button>
         </div>
+        <div className="toolbar-group">
+          <button type="button" className="icon-btn" onClick={togglePlay}>
+            {isPlaying ? <Pause size={15} /> : <Play size={15} />}
+          </button>
+          <select value={speedIndex} onChange={(e) => setSpeedIndex(Number(e.target.value))}>
+            {SPEED_LABELS.map((label, i) => (
+              <option key={label} value={i}>{label}</option>
+            ))}
+          </select>
+          <button type="button" className="text-btn" onClick={resetToNow}>Now</button>
+        </div>
+      </div>
+
+      <nav className="panel-tabs">
+        <button type="button" className={tab === 'layers' ? 'active' : ''} onClick={() => setTab('layers')}>
+          <Globe2 size={15} /> Layers
+        </button>
+        <button type="button" className={tab === 'airports' ? 'active' : ''} onClick={() => setTab('airports')}>
+          <MapPin size={15} /> Airports
+        </button>
+        <button type="button" className={tab === 'flights' ? 'active' : ''} onClick={() => setTab('flights')}>
+          <PlaneTakeoff size={15} /> Flights
+          {virtualFlights.length > 0 && <span className="tab-count">{virtualFlights.length}</span>}
+        </button>
       </nav>
-    </>
+
+      <div className="panel-body">
+        {tab === 'layers' && (
+          <section className="panel-section">
+            <div className="layer-grid">
+              {(Object.keys(layers) as (keyof LayerToggles)[]).map((key) => {
+                const Icon = LAYER_ICONS[key];
+                const disabled = key === 'liveFlights';
+                return (
+                  <button
+                    key={key} type="button" disabled={disabled}
+                    className={`layer-btn ${layers[key] ? 'active' : ''}`}
+                    onClick={() => toggleLayer(key)}
+                    title={disabled ? 'Live flight tracking is not implemented yet' : LAYER_TITLES[key]}
+                  >
+                    <Icon size={16} />
+                    <span>{LAYER_TITLES[key]}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
+        {tab === 'airports' && (
+          <section className="panel-section">
+            <h2>Find an airport</h2>
+            <AirportSearch
+              placeholder="Search any airport to pin it on the map…"
+              onSelect={(a) => { pinAirport(a.icao); focusAirport(a); }}
+            />
+            {pinnedAirportIcaos.length === 0 ? (
+              <p className="empty-hint">No airports pinned yet — search above to add one. It'll stay on the map.</p>
+            ) : (
+              <ul className="flight-list">
+                {pinnedAirportIcaos.map((icao) => {
+                  const a = getAirportByIcao(icao);
+                  return (
+                    <li key={icao}>
+                      <span><MapPin size={12} style={{ marginRight: 4 }} />{a ? `${a.iata} — ${a.name}` : icao}</span>
+                      <button type="button" className="icon-btn" onClick={() => unpinAirport(icao)} title="Unpin">
+                        <X size={14} />
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </section>
+        )}
+
+        {tab === 'flights' && (
+          <>
+            <section className="panel-section">
+              <h2>Launch a virtual flight</h2>
+              <p className="hint-line">Type to search, ↑↓ to move, Enter to pick — origin first, then destination.</p>
+              <FlightRouteSearch
+                origin={origin}
+                destination={destination}
+                onPickOrigin={(a) => { setOrigin(a); focusAirport(a); }}
+                onPickDestination={(a) => { setDestination(a); focusAirport(a); }}
+                onClearOrigin={() => { setOrigin(null); setDestination(null); }}
+                onClearDestination={() => setDestination(null)}
+              />
+
+              {origin && destination && distanceKm !== null && (
+                <div className={`route-badge ${realRoute ? 'real' : 'estimated'}`}>
+                  <BadgeCheck size={13} />
+                  {realRoute ? 'Real scheduled non-stop route' : 'No scheduled route — estimated'}
+                  <span className="route-distance">{Math.round(distanceKm)} km</span>
+                </div>
+              )}
+
+              {origin && destination && (
+                <div className="flight-config-card">
+                  <label className="field">
+                    Aircraft
+                    <select value={aircraftType} onChange={(e) => setAircraftType(e.target.value as AircraftCategory)}>
+                      {Object.entries(AIRCRAFT_CATEGORY_LABELS).map(([value, label]) => (
+                        <option key={value} value={value}>
+                          {label} (max {AIRCRAFT_RANGE_KM[value as AircraftCategory].toLocaleString()} km)
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  {!feasible && distanceKm !== null && (
+                    <div className="warning-banner">
+                      <ShieldAlert size={14} />
+                      {Math.round(distanceKm)} km exceeds this aircraft's {AIRCRAFT_RANGE_KM[aircraftType].toLocaleString()} km
+                      range — can't be flown non-stop. Pick a longer-range aircraft or a closer destination.
+                    </div>
+                  )}
+
+                  <div className="field-row">
+                    <label className="field">
+                      Departure
+                      <input type="datetime-local" value={departure} onChange={(e) => setDeparture(e.target.value)} placeholder="Now" />
+                    </label>
+                    <label className="field">
+                      Duration (h)
+                      <input
+                        type="number" min={0.5} step={0.5} value={duration ?? ''}
+                        onChange={(e) => setDuration(Number(e.target.value))}
+                      />
+                    </label>
+                  </div>
+
+                  <div className="field">
+                    <span className="field-label-row"><LandPlot size={12} /> Diversion airports — nearest-first</span>
+                    {alternateIcaos.length > 0 ? (
+                      <ul className="flight-list compact">
+                        {alternateIcaos.map((icao) => {
+                          const a = getAirportByIcao(icao);
+                          return (
+                            <li key={icao}>
+                              <span>{a ? `${a.iata} — ${a.name}` : icao}</span>
+                              <button
+                                type="button" className="icon-btn"
+                                onClick={() => setAlternateIcaos((prev) => prev.filter((c) => c !== icao))}
+                              >
+                                <X size={14} />
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    ) : (
+                      <div className="warning-banner">
+                        <ShieldAlert size={14} /> No international airport found nearby to serve as an alternate.
+                      </div>
+                    )}
+                  </div>
+
+                  <button type="button" className="primary-btn" disabled={!canLaunch} onClick={handleLaunch}>
+                    <PlaneTakeoff size={14} /> Launch flight
+                  </button>
+                </div>
+              )}
+            </section>
+
+            {virtualFlights.length > 0 && (
+              <section className="panel-section">
+                <h2>Your virtual flights</h2>
+                <ul className="flight-list">
+                  {virtualFlights.map((f) => {
+                    const isFollowing = followFlightId === f.id;
+                    return (
+                      <li key={f.id}>
+                        <span>{f.callsign} · {f.originIcao} → {f.destinationIcao}</span>
+                        <span className="flight-item-actions">
+                          <button
+                            type="button"
+                            className={`icon-btn ${isFollowing ? 'active' : ''}`}
+                            title={isFollowing ? 'Stop following' : 'Follow with camera'}
+                            onClick={() => setFollowFlight(isFollowing ? null : f.id)}
+                          >
+                            <Crosshair size={14} />
+                          </button>
+                          <button type="button" className="icon-btn" onClick={() => removeVirtualFlight(f.id)}>
+                            <Trash2 size={14} />
+                          </button>
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </section>
+            )}
+          </>
+        )}
+      </div>
+    </div>
   );
 }

@@ -1,19 +1,10 @@
-import type { Degrees } from '../types/astro';
 import { latLonToScreen, type PolarMapConfig } from './projection';
 
 const DEG2RAD = Math.PI / 180;
 
-/** نقطة تحت الشمس مباشرة (Subsolar Point) على سطح الأرض، من الميل وزاوية غرينتش الساعية */
-export function getSubsolarPoint(sunDecDeg: Degrees, sunGhaDeg: Degrees) {
-  return { lat: sunDecDeg, lon: normalizeLon(-sunGhaDeg) };
-}
-
-function solarAltitudeDeg(
-  latDeg: number,
-  lonDeg: number,
-  subsolarLat: Degrees,
-  subsolarLon: Degrees
-): number {
+/** Sun altitude in degrees above the horizon at (latDeg, lonDeg): negative means night there.
+ * Exported so the renderer can also use it per-aircraft, for night lighting effects. */
+export function getSolarAltitudeDeg(latDeg: number, lonDeg: number, subsolarLat: number, subsolarLon: number): number {
   const phi = latDeg * DEG2RAD;
   const delta = subsolarLat * DEG2RAD;
   const H = (lonDeg - subsolarLon) * DEG2RAD;
@@ -32,8 +23,8 @@ function altitudeToAlpha(altDeg: number): number {
 
 export function drawNightShading(
   ctx: CanvasRenderingContext2D,
-  subsolarLat: Degrees,
-  subsolarLon: Degrees,
+  subsolarLat: number,
+  subsolarLon: number,
   config: PolarMapConfig,
   resolution: { rings?: number; slices?: number } = {}
 ) {
@@ -54,7 +45,7 @@ export function drawNightShading(
       const lon1 = lon0 + lonStep;
       const midLon = (lon0 + lon1) / 2;
 
-      const alt = solarAltitudeDeg(midLat, midLon, subsolarLat, subsolarLon);
+      const alt = getSolarAltitudeDeg(midLat, midLon, subsolarLat, subsolarLon);
       const alpha = altitudeToAlpha(alt);
       if (alpha <= 0.004) continue;
 
@@ -74,8 +65,4 @@ export function drawNightShading(
     }
   }
   ctx.restore();
-}
-
-function normalizeLon(lon: number): number {
-  return (((lon + 180) % 360) + 360) % 360 - 180;
 }

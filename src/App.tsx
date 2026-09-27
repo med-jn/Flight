@@ -1,29 +1,34 @@
 import { useEffect, useState } from 'react';
-import { SkyCanvas } from './components/SkyCanvas';
+import { FlightCanvas } from './components/FlightCanvas';
 import { ControlsPanel } from './components/ControlsPanel';
 import { InfoCard } from './components/InfoCard';
-import { loadStarCatalog, loadArabicEnrichment } from './core/starCatalog';
-import { loadZodiacData } from './core/zodiac';
+import { loadAirportCatalog, getAirportByIcao } from './core/airportCatalog';
+import { loadRouteCatalog } from './core/routeCatalog';
 import { loadEarthImage } from './core/earthImage';
-import type { RenderOutput } from './render/skyRenderer';
+import { useFlightStore } from './state/store';
+import type { RenderOutput } from './render/flightRenderer';
 
 export default function App() {
-  const [output, setOutput] = useState<RenderOutput | null>(null);
+  const [, setOutput] = useState<RenderOutput | null>(null);
+  const selectedAirport = useFlightStore((s) => s.selectedAirport);
+  const setSelectedAirport = useFlightStore((s) => s.setSelectedAirport);
 
   useEffect(() => {
-    loadStarCatalog();
-    loadArabicEnrichment(); // جديد — الإثراء العربي، بالخلفية دون انتظار
-    loadZodiacData();
-    // صورة الأرض الحقيقية: إن وُجدت معايرة افتراضية مُضمَّنة أو محفوظة محلياً، ستُستخدم هنا
+    loadAirportCatalog().then(() => loadRouteCatalog());
     loadEarthImage();
   }, []);
+
+  function handleSelectByIcao(icao: string) {
+    const a = getAirportByIcao(icao);
+    if (a) setSelectedAirport(a);
+  }
 
   return (
     <div className="app-root">
       <ControlsPanel />
       <div className="stage">
-        <SkyCanvas onFrame={setOutput} />
-        <InfoCard output={output} />
+        <FlightCanvas onFrame={setOutput} onSelectAirport={handleSelectByIcao} />
+        <InfoCard airport={selectedAirport} />
       </div>
     </div>
   );

@@ -1,52 +1,73 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { DEFAULT_OBSERVER } from '../core/observer';
-import type { ObserverLocation } from '../types/astro';
-import type { ZodiacKey } from '../core/zodiac';
-import { loadSavedCalibration, saveCalibration, clearCalibration, type MapCalibration } from '../core/mapCalibration';
+import {
+  loadSavedCalibration,
+  saveCalibration,
+  clearCalibration,
+  type MapCalibration,
+} from '../core/mapCalibration';
+import { clampScale, maxPanFraction } from '../core/zoom';
+import { FLIGHT_FADE_MS } from '../core/constants';
+import type { Airport, VirtualFlight, LiveFlightState } from '../types/flight';
 
-export const SPEED_MULTIPLIERS = [0, 60, 3600, 86400, 86400 * 7, 86400 * 30, 86400 * 365];
-export const SPEED_LABELS_AR = [
-  'موقوف', '1د/ث', '1س/ث', '1يوم/ث', '1أسبوع/ث', '1شهر/ث', '1سنة/ث',
-];
-
-/** عدد ثواني اليوم الشمسي الكامل — يحوّل زاوية السحب اليدوي (360° = يوم كامل) إلى زمن محاكاة */
+export const SPEED_MULTIPLIERS = [0, 60, 3600, 86400, 86400 * 7];
+export const SPEED_LABELS = ['Paused', '1 min/s', '1 hour/s', '1 day/s', '1 week/s'];
 export const SECONDS_PER_DAY = 86400;
 
-/** أقصى مسافة تحريك (Pan)، كنسبة من نصف قطر القبة، لكل وحدة تكبير فوق 1x */
-const PAN_CLAMP_FACTOR = 0.35;
+// Default view: 70% zoom, centered on the Middle East. Pan is a resolution-independent
+// fraction (see computePanForTarget), so this can be baked in as a constant rather than
+// computed once a canvas element exists.
+const DEFAULT_ZOOM_SCALE = 8.21; // ~70% on the log zoom scale (see core/zoom.ts)
+const DEFAULT_PAN = { panX: -0.2475, panY: -0.2475 }; // centered near 27°N, 45°E (Middle East)
 
 export interface LayerToggles {
   land: boolean;
   terminator: boolean;
-  tropics: boolean;
   meridians: boolean;
-  equatorialGrid: boolean;
-  mansions: boolean;
-  ecliptic: boolean;
-  stars: boolean;
-  planets: boolean;
+  liveFlights: boolean;
+  virtualFlights: boolean;
   labels: boolean;
-  observerMarker: boolean;
 }
 
-interface SimulationState {
+export interface CameraTarget {
+  lat: number;
+  lon: number;
+  zoomPercent: number;
+}
+
+/** Keeps the camera locked onto pan (radial clamp), so the dome's edge can never be panned
+ * into view regardless of zoom or direction — see maxPanFraction in core/zoom.ts for the math. */
+function clampPan(panX: number, panY: number, zoomScale: number): { panX: number; panY: number } {
+  const maxFraction = maxPanFraction(zoomScale);
+  const mag = Math.hypot(panX, panY);
+  if (mag <= maxFraction || mag === 0) return { panX, panY };
+  const k = maxFraction / mag;
+  return { panX: panX * k, panY: panY * k };
+}
+
+interface FlightState {
   date: Date;
   isPlaying: boolean;
   speedIndex: number;
-  /** معدّل دوران زمني يدوي مستمر (درجة/ثانية) بعزم فيزيائي — لا يتباطأ حتى يُلغى */
   customTimeRateDegPerSec: number | null;
+
   zoomScale: number;
   panX: number;
   panY: number;
-  observer: ObserverLocation;
-  layers: LayerToggles;
-  /** الأبراج المُبرزة حالياً — اختيار متعدد، لا حصر لواحد */
-  selectedZodiacs: ZodiacKey[];
-  /** فهارس المنازل القمرية المُبرزة (0..27) — اختيار متعدد */
-  selectedMansionIndices: number[];
-
   sceneRotationDeg: number;
+  /** A pending "fly to" request the canvas should animate toward, then clear. */
+  pendingCameraTarget: CameraTarget | null;
+  /** When set, the canvas keeps re-centering on this virtual flight's live position every
+   * frame while it's airborne. Cleared automatically on landing, or if the person manually
+   * pans/zooms (see FlightCanvas), so it never fights their input. */
+  followFlightId: string | null;
+
+  layers: LayerToggles;
+
+  selectedAirport: Airport | null;
+  pinnedAirportIcaos: string[];
+  virtualFlights: VirtualFlight[];
+  liveFlights: LiveFlightState[];
 
   calibration: MapCalibration | null;
   isCalibrating: boolean;
@@ -54,20 +75,32 @@ interface SimulationState {
   setDate: (d: Date) => void;
   stepTime: (deltaSeconds: number) => void;
   togglePlay: () => void;
+  play: () => void;
   resetToNow: () => void;
   setSpeedIndex: (i: number) => void;
-  setCustomTimeRate: (degPerSec: number | null) => void;
+  setCustomTimeRate: (v: number | null) => void;
+
   setZoom: (z: number) => void;
   setPan: (dxFraction: number, dyFraction: number) => void;
-  resetPan: () => void;
-  setObserver: (o: Partial<ObserverLocation>) => void;
-  toggleLayer: (key: keyof LayerToggles) => void;
-  toggleZodiacSelection: (z: ZodiacKey) => void;
-  clearZodiacSelection: () => void;
-  toggleMansionSelection: (index: number) => void;
-  clearMansionSelection: () => void;
+  /** Directly sets pan + zoom (still clamped) — used by the camera fly-to/follow animation. */
+  setView: (panX: number, panY: number, zoomScale: number) => void;
+  resetView: () => void;
   setSceneRotation: (deg: number) => void;
   resetSceneRotation: () => void;
+  requestFlyTo: (lat: number, lon: number, zoomPercent: number) => void;
+  clearPendingCameraTarget: () => void;
+  setFollowFlight: (id: string | null) => void;
+
+  toggleLayer: (key: keyof LayerToggles) => void;
+
+  setSelectedAirport: (a: Airport | null) => void;
+  pinAirport: (icao: string) => void;
+  unpinAirport: (icao: string) => void;
+  addVirtualFlight: (f: VirtualFlight) => void;
+  removeVirtualFlight: (id: string) => void;
+  /** Removes virtual flights whose post-arrival fade window has fully elapsed. */
+  pruneExpiredVirtualFlights: () => void;
+  setLiveFlights: (flights: LiveFlightState[]) => void;
 
   startCalibrating: () => void;
   cancelCalibrating: () => void;
@@ -76,42 +109,34 @@ interface SimulationState {
   resetCalibration: () => void;
 }
 
-function clampPanToZoom(panX: number, panY: number, zoomScale: number): { panX: number; panY: number } {
-  const maxFraction = Math.max(0, zoomScale - 1) * PAN_CLAMP_FACTOR;
-  const mag = Math.hypot(panX, panY);
-  if (mag <= maxFraction || mag === 0) return { panX, panY };
-  const k = maxFraction / mag;
-  return { panX: panX * k, panY: panY * k };
-}
-
-export const useSimulationStore = create<SimulationState>()(
+export const useFlightStore = create<FlightState>()(
   persist(
     (set, get) => ({
       date: new Date(),
       isPlaying: true,
       speedIndex: 1,
       customTimeRateDegPerSec: null,
-      zoomScale: 1,
-      panX: 0,
-      panY: 0,
-      observer: DEFAULT_OBSERVER,
+
+      zoomScale: DEFAULT_ZOOM_SCALE,
+      panX: DEFAULT_PAN.panX,
+      panY: DEFAULT_PAN.panY,
+      sceneRotationDeg: 0,
+      pendingCameraTarget: null,
+      followFlightId: null,
+
       layers: {
         land: true,
         terminator: true,
-        tropics: false,
         meridians: false,
-        equatorialGrid: false,
-        mansions: false,
-        ecliptic: false,
-        stars: false,
-        planets: false,
-        labels: false,
-        observerMarker: false,
+        liveFlights: false, // deferred — not implemented yet
+        virtualFlights: true,
+        labels: true,
       },
-      selectedZodiacs: [],
-      selectedMansionIndices: [],
 
-      sceneRotationDeg: 0,
+      selectedAirport: null,
+      pinnedAirportIcaos: [],
+      virtualFlights: [],
+      liveFlights: [],
 
       calibration: loadSavedCalibration(),
       isCalibrating: false,
@@ -130,43 +155,66 @@ export const useSimulationStore = create<SimulationState>()(
           const next = !s.isPlaying;
           return { isPlaying: next, speedIndex: next && s.speedIndex === 0 ? 2 : s.speedIndex };
         }),
+      play: () =>
+        set((s) => ({
+          isPlaying: true,
+          customTimeRateDegPerSec: null,
+          speedIndex: s.speedIndex === 0 ? 2 : s.speedIndex,
+        })),
       resetToNow: () => set({ date: new Date() }),
       setSpeedIndex: (i) => set({ speedIndex: i }),
-      setCustomTimeRate: (degPerSec) =>
-        set((s) => ({
-          customTimeRateDegPerSec: degPerSec,
-          isPlaying: degPerSec !== null ? false : s.isPlaying,
-        })),
+      setCustomTimeRate: (v) =>
+        set((s) => ({ customTimeRateDegPerSec: v, isPlaying: v !== null ? false : s.isPlaying })),
+
       setZoom: (z) => {
-        const clamped = Math.min(6, Math.max(0.5, z));
+        const clamped = clampScale(z);
         const { panX, panY } = get();
-        set({ zoomScale: clamped, ...clampPanToZoom(panX, panY, clamped) });
+        set({ zoomScale: clamped, ...clampPan(panX, panY, clamped) });
       },
       setPan: (dxFraction, dyFraction) =>
-        set((s) => clampPanToZoom(s.panX + dxFraction, s.panY + dyFraction, s.zoomScale)),
-      resetPan: () => set({ panX: 0, panY: 0 }),
-      setObserver: (o) => set((s) => ({ observer: { ...s.observer, ...o } })),
-      toggleLayer: (key) => set((s) => ({ layers: { ...s.layers, [key]: !s.layers[key] } })),
-      toggleZodiacSelection: (z) =>
-        set((s) => ({
-          selectedZodiacs: s.selectedZodiacs.includes(z)
-            ? s.selectedZodiacs.filter((x) => x !== z)
-            : [...s.selectedZodiacs, z],
-        })),
-      clearZodiacSelection: () => set({ selectedZodiacs: [] }),
-      toggleMansionSelection: (index) =>
-        set((s) => ({
-          selectedMansionIndices: s.selectedMansionIndices.includes(index)
-            ? s.selectedMansionIndices.filter((x) => x !== index)
-            : [...s.selectedMansionIndices, index],
-        })),
-      clearMansionSelection: () => set({ selectedMansionIndices: [] }),
+        set((s) => clampPan(s.panX + dxFraction, s.panY + dyFraction, s.zoomScale)),
+      setView: (panX, panY, zoomScale) => {
+        const clampedZoom = clampScale(zoomScale);
+        set({ zoomScale: clampedZoom, ...clampPan(panX, panY, clampedZoom) });
+      },
+      resetView: () => set({ panX: DEFAULT_PAN.panX, panY: DEFAULT_PAN.panY, zoomScale: DEFAULT_ZOOM_SCALE }),
       setSceneRotation: (deg) => {
         let d = deg % 360;
         if (d < 0) d += 360;
         set({ sceneRotationDeg: d });
       },
       resetSceneRotation: () => set({ sceneRotationDeg: 0 }),
+      requestFlyTo: (lat, lon, zoomPercent) => set({ pendingCameraTarget: { lat, lon, zoomPercent } }),
+      clearPendingCameraTarget: () => set({ pendingCameraTarget: null }),
+      setFollowFlight: (id) => set({ followFlightId: id }),
+
+      toggleLayer: (key) => set((s) => ({ layers: { ...s.layers, [key]: !s.layers[key] } })),
+
+      setSelectedAirport: (a) => set({ selectedAirport: a }),
+      pinAirport: (icao) =>
+        set((s) => (s.pinnedAirportIcaos.includes(icao)
+          ? s
+          : { pinnedAirportIcaos: [...s.pinnedAirportIcaos, icao] })),
+      unpinAirport: (icao) =>
+        set((s) => ({ pinnedAirportIcaos: s.pinnedAirportIcaos.filter((c) => c !== icao) })),
+      addVirtualFlight: (f) => set((s) => ({ virtualFlights: [...s.virtualFlights, f] })),
+      removeVirtualFlight: (id) =>
+        set((s) => ({
+          virtualFlights: s.virtualFlights.filter((f) => f.id !== id),
+          followFlightId: s.followFlightId === id ? null : s.followFlightId,
+        })),
+      pruneExpiredVirtualFlights: () => {
+        const now = get().date.getTime();
+        set((s) => {
+          const kept = s.virtualFlights.filter((f) => {
+            const arr = new Date(f.arrivalTime).getTime();
+            return now - arr < FLIGHT_FADE_MS;
+          });
+          const stillThere = kept.some((f) => f.id === s.followFlightId);
+          return { virtualFlights: kept, followFlightId: stillThere ? s.followFlightId : null };
+        });
+      },
+      setLiveFlights: (flights) => set({ liveFlights: flights }),
 
       startCalibrating: () => set({ isCalibrating: true }),
       cancelCalibrating: () => set({ isCalibrating: false }),
@@ -187,23 +235,21 @@ export const useSimulationStore = create<SimulationState>()(
       },
     }),
     {
-      name: 'astro-clock-settings',
-      version: 3,
+      name: 'flight-clock-settings',
+      version: 4,
       migrate: (persisted: any) => {
-        if (persisted?.layers && 'meridians24' in persisted.layers) delete persisted.layers.meridians24;
-        if (persisted && 'isolatedZodiac' in persisted) delete persisted.isolatedZodiac;
-        if (persisted && !Array.isArray(persisted.selectedZodiacs)) persisted.selectedZodiacs = [];
-        if (persisted && !Array.isArray(persisted.selectedMansionIndices)) persisted.selectedMansionIndices = [];
+        if (persisted && !Array.isArray(persisted.pinnedAirportIcaos)) persisted.pinnedAirportIcaos = [];
         return persisted;
       },
       partialize: (s) => ({
         zoomScale: s.zoomScale,
-        observer: s.observer,
+        panX: s.panX,
+        panY: s.panY,
         layers: s.layers,
-        selectedZodiacs: s.selectedZodiacs,
-        selectedMansionIndices: s.selectedMansionIndices,
         sceneRotationDeg: s.sceneRotationDeg,
         speedIndex: s.speedIndex,
+        virtualFlights: s.virtualFlights,
+        pinnedAirportIcaos: s.pinnedAirportIcaos,
       }),
     }
   )
