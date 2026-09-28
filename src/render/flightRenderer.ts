@@ -347,6 +347,42 @@ function getPath2D(d: string): Path2D {
   return p;
 }
 
+function hexToRgb(hex: string): [number, number, number] {
+  const h = hex.replace('#', '');
+  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+}
+
+/** Linearly blends `hex` toward `towardHex` by t (0 = hex, 1 = towardHex). */
+function mixColor(hex: string, towardHex: string, t: number): string {
+  const [r1, g1, b1] = hexToRgb(hex);
+  const [r2, g2, b2] = hexToRgb(towardHex);
+  const r = Math.round(r1 + (r2 - r1) * t);
+  const g = Math.round(g1 + (g2 - g1) * t);
+  const b = Math.round(b1 + (b2 - b1) * t);
+  return `rgb(${r}, ${g}, ${b})`;
+}
+
+/**
+ * A small "glowing" light point. Deliberately NOT using ctx.shadowBlur here — that property
+ * renders inconsistently (and can smear into long streaks) under rotation transforms on some
+ * browsers/GPUs. Two flat circles (a faint wide halo + a solid core) fake the same glow look
+ * cheaply and reliably.
+ */
+function drawGlowDot(ctx: CanvasRenderingContext2D, x: number, y: number, color: string, alpha: number, radius = 1.1) {
+  const a = Math.min(1, Math.max(0, alpha));
+  ctx.save();
+  ctx.fillStyle = color;
+  ctx.globalAlpha = a * 0.3;
+  ctx.beginPath();
+  ctx.arc(x, y, radius * 2.4, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = a;
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
 function drawAircraftIcon(
   ctx: CanvasRenderingContext2D, p: ProjectedPoint2D, headingDeg: number,
   config: PolarMapConfig, extraScale: number, category: AircraftCategory, nightFactor = 0
