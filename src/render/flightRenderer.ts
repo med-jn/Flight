@@ -100,16 +100,18 @@ export function renderFlightMap(
 
   const hitTargets: HitTarget[] = [];
 
-  if (layers.virtualFlights) {
-    virtualFlights.forEach((f) => drawVirtualFlight(ctx, f, date, sub, config, hitTargets));
-  }
-  if (layers.liveFlights) {
-    liveFlights.forEach((f) => drawLiveFlight(ctx, f, sub, config, hitTargets));
-  }
-
+  // Airports are drawn first so aircraft always render on top of their dots/labels, never
+  // hidden underneath — matters when a flight departs from or lands at a pinned airport.
   const airportsToShow = new Set(pinnedAirportIcaos);
   if (selectedAirport) airportsToShow.add(selectedAirport.icao);
   drawAirports(ctx, airportsToShow, selectedAirport, config, layers.labels, hitTargets);
+
+  if (layers.virtualFlights) {
+    virtualFlights.forEach((f) => drawVirtualFlight(ctx, f, date, sub, zoomScale, config, hitTargets));
+  }
+  if (layers.liveFlights) {
+    liveFlights.forEach((f) => drawLiveFlight(ctx, f, sub, zoomScale, config, hitTargets));
+  }
 
   ctx.restore();
   ctx.restore();
@@ -215,7 +217,7 @@ function computeNightFactor(lat: number, lon: number, sub: { lat: number; lon: n
 
 function drawVirtualFlight(
   ctx: CanvasRenderingContext2D, flight: VirtualFlight, date: Date, sub: { lat: number; lon: number },
-  config: PolarMapConfig, hitTargets: HitTarget[]
+  zoomScale: number, config: PolarMapConfig, hitTargets: HitTarget[]
 ) {
   const origin = getAirportByIcao(flight.originIcao);
   const dest = getAirportByIcao(flight.destinationIcao);
@@ -257,7 +259,7 @@ function drawVirtualFlight(
       const lookaheadPos = greatCircleInterpolate(a, b, Math.min(1, f + 0.002));
       const bearing = initialBearingDeg(pos, lookaheadPos);
       const nightFactor = computeNightFactor(pos.latitudeDeg, pos.longitudeDeg, sub);
-      drawAircraftIcon(ctx, p, bearing, config, 1, flight.aircraftType, nightFactor);
+      drawAircraftIcon(ctx, p, bearing, config, zoomScale, 1, flight.aircraftType, nightFactor);
       hitTargets.push({
         x: p.x, y: p.y,
         name: flight.callsign ?? `${origin.iata} → ${dest.iata}`,
@@ -270,7 +272,7 @@ function drawVirtualFlight(
     if (p.visible) {
       const shrink = 1 - 0.4 * Math.min(1, timeSinceArrival / FLIGHT_FADE_MS);
       const nightFactor = computeNightFactor(dest.latitudeDeg, dest.longitudeDeg, sub);
-      drawAircraftIcon(ctx, p, 0, config, shrink, flight.aircraftType, nightFactor);
+      drawAircraftIcon(ctx, p, 0, config, zoomScale, shrink, flight.aircraftType, nightFactor);
     }
   }
 
@@ -279,12 +281,12 @@ function drawVirtualFlight(
 
 function drawLiveFlight(
   ctx: CanvasRenderingContext2D, flight: LiveFlightState, sub: { lat: number; lon: number },
-  config: PolarMapConfig, hitTargets: HitTarget[]
+  zoomScale: number, config: PolarMapConfig, hitTargets: HitTarget[]
 ) {
   const p = latLonToScreen(flight.latitudeDeg, flight.longitudeDeg, config);
   if (!p.visible) return;
   const nightFactor = computeNightFactor(flight.latitudeDeg, flight.longitudeDeg, sub);
-  drawAircraftIcon(ctx, p, flight.headingDeg ?? 0, config, 1, 'narrowbody', nightFactor);
+  drawAircraftIcon(ctx, p, flight.headingDeg ?? 0, config, zoomScale, 1, 'narrowbody', nightFactor);
   hitTargets.push({
     x: p.x, y: p.y,
     name: flight.callsign?.trim() || flight.icao24.toUpperCase(),
@@ -327,10 +329,13 @@ const AIRCRAFT_SHAPES: Record<AircraftCategory, AircraftShape> = {
   },
 };
 
-// On-screen height (px) at extraScale=1 for a narrowbody; other categories scale relative to
-// their real proportions via SIZE_MULTIPLIER, and this ignores zoomScale entirely (fixed
-// screen size, matching the rest of the app's markers).
-const BASE_ICON_HEIGHT_PX = 34;
+// On-screen height (px) for a narrowbody at the app's default zoom (~70%, scale ≈8.5) — the
+// reference point the icon grows/shrinks from as you zoom the map in or out, instead of
+// staying a fixed screen size regardless of zoom.
+const BASE_ICON_HEIGHT_PX = 30;
+const REFERENCE_ZOOM_SCALE = 8.5;
+const MIN_ICON_HEIGHT_PX = 12;
+const MAX_ICON_HEIGHT_PX = 110;
 const SIZE_MULTIPLIER: Record<AircraftCategory, number> = {
   narrowbody: 1.0, widebody: 1.3, regional: 0.85, private: 0.7, cargo: 1.2,
 };
@@ -385,12 +390,14 @@ function drawGlowDot(ctx: CanvasRenderingContext2D, x: number, y: number, color:
 
 function drawAircraftIcon(
   ctx: CanvasRenderingContext2D, p: ProjectedPoint2D, headingDeg: number,
-  config: PolarMapConfig, extraScale: number, category: AircraftCategory, nightFactor = 0
+  config: PolarMapConfig, zoomScale: number, extraScale: number, category: AircraftCategory, nightFactor = 0
 ) {
   const shape = AIRCRAFT_SHAPES[category];
   const localNorthDeg = screenBearingToCenterDeg(p, config);
   const rotationDeg = localNorthDeg + headingDeg;
-  const targetHeight = BASE_ICON_HEIGHT_PX * SIZE_MULTIPLIER[category] * extraScale;
+  const zoomRelativeHeight = BASE_ICON_HEIGHT_PX * (zoomScale / REFERENCE_ZOOM_SCALE);
+  const clampedHeight = Math.min(MAX_ICON_HEIGHT_PX, Math.max(MIN_ICON_HEIGHT_PX, zoomRelativeHeight));
+  const targetHeight = clampedHeight * SIZE_MULTIPLIER[category] * extraScale;
   const svgScale = targetHeight / shape.height;
 
   ctx.save();

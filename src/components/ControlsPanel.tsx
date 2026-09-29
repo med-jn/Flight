@@ -10,7 +10,7 @@ import { getAirportByIcao } from '../core/airportCatalog';
 import { greatCircleDistanceKm } from '../core/greatCircle';
 import { isRealRoute, getRealDestinationsFrom } from '../core/routeCatalog';
 import { AIRCRAFT_RANGE_KM, isRouteFeasible, suggestFeasibleCategory } from '../core/aircraftRange';
-import { suggestAlternates } from '../core/alternateAirports';
+import { suggestAlternates, suggestNearbyAirports } from '../core/alternateAirports';
 import { estimateTypicalDurationHours } from '../core/constants';
 import { scaleToPercent } from '../core/zoom';
 import { AIRCRAFT_CATEGORY_LABELS, type Airport, type AircraftCategory } from '../types/flight';
@@ -95,6 +95,15 @@ export function ControlsPanel() {
     setAlternateIcaos(suggestAlternates(origin, destination, altCount).map((a) => a.icao));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [origin?.icao, destination?.icao]);
+
+  const nearbyAirports = useMemo(
+    () => (origin && destination ? suggestNearbyAirports(origin, destination, 8) : []),
+    [origin?.icao, destination?.icao]
+  );
+
+  function handleAddAlternate(icao: string) {
+    setAlternateIcaos((prev) => (prev.includes(icao) ? prev : [...prev, icao]));
+  }
 
   function focusAirport(a: Airport) {
     setSelectedAirport(a);
@@ -307,6 +316,16 @@ export function ControlsPanel() {
                         <ShieldAlert size={14} /> No international airport found nearby to serve as an alternate.
                       </div>
                     )}
+                    {nearbyAirports.filter((a) => !alternateIcaos.includes(a.icao)).length > 0 && (
+                      <div className="chip-row">
+                        {nearbyAirports.filter((a) => !alternateIcaos.includes(a.icao)).map((a) => (
+                          <button key={a.icao} type="button" className="chip" title={a.name} onClick={() => handleAddAlternate(a.icao)}>
+                            + {a.iata}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    <AirportSearch placeholder="Search a transit/stopover airport…" onSelect={(a) => handleAddAlternate(a.icao)} />
                   </div>
 
                   <button type="button" className="primary-btn" disabled={!canLaunch} onClick={handleLaunch}>

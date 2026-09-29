@@ -216,10 +216,13 @@ export function FlightCanvas({ onFrame, onSelectAirport }: Props) {
     }
 
     function onPointerDown(e: PointerEvent) {
+      // Touch is handled entirely by the dedicated touch handlers below — kept fully separate
+      // instead of unified through Pointer Events, since Pointer Event support/behavior for
+      // touch has proven unreliable on at least one real device tested with this app.
+      if (e.pointerType !== 'mouse') return;
       e.preventDefault();
       canvas!.setPointerCapture(e.pointerId);
       activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      if (e.pointerType !== 'mouse') setTooltip(findNearestTarget(e.clientX, e.clientY));
 
       if (activePointers.size === 1) {
         dragStartTime = performance.now();
@@ -237,8 +240,9 @@ export function FlightCanvas({ onFrame, onSelectAirport }: Props) {
     }
 
     function onPointerMove(e: PointerEvent) {
+      if (e.pointerType !== 'mouse') return;
       if (!activePointers.has(e.pointerId)) {
-        if (e.pointerType === 'mouse') setTooltip(findNearestTarget(e.clientX, e.clientY));
+        setTooltip(findNearestTarget(e.clientX, e.clientY));
         return;
       }
       e.preventDefault();
@@ -275,9 +279,9 @@ export function FlightCanvas({ onFrame, onSelectAirport }: Props) {
     }
 
     function onPointerUp(e: PointerEvent) {
+      if (e.pointerType !== 'mouse') return;
       try { canvas!.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
       activePointers.delete(e.pointerId);
-      if (e.pointerType !== 'mouse') setTooltip(null);
 
       const durationMs = performance.now() - dragStartTime;
       const isTap = durationMs < TAP_MAX_DURATION_MS && dragTotalMovementPx < TAP_MAX_MOVEMENT_PX;
@@ -326,6 +330,107 @@ export function FlightCanvas({ onFrame, onSelectAirport }: Props) {
       e.preventDefault();
     }
 
+    // --- Explicit Touch Events, entirely separate from the Pointer Event handlers above ---
+    // Touch is the oldest, most universally-supported gesture API on mobile browsers, so this
+    // is the reliable fallback when Pointer Events for touch don't behave as expected.
+    let touchStartTime = 0;
+    let touchStartX = 0;
+    let touchStartY = 0;
+    let touchMoved = 0;
+    let lastTouchMid = { x: 0, y: 0 };
+    let lastTouchPinchDist = 0;
+    let touchVelocitySamples: { vx: number; vy: number }[] = [];
+    let lastTouchMoveTime = 0;
+
+    function touchMidpoint(touches: TouchList): { x: number; y: number } {
+      if (touches.length === 1) return { x: touches[0].clientX, y: touches[0].clientY };
+      return { x: (touches[0].clientX + touches[1].clientX) / 2, y: (touches[0].clientY + touches[1].clientY) / 2 };
+    }
+    function touchDistance(touches: TouchList): number {
+      if (touches.length < 2) return 0;
+      return Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
+    }
+
+    function onTouchStart(e: TouchEvent) {
+      e.preventDefault();
+      momentumRef.current = { vx: 0, vy: 0 };
+      if (e.touches.length === 1) {
+        touchStartTime = performance.now();
+        touchStartX = e.touches[0].clientX;
+        touchStartY = e.touches[0].clientY;
+        touchMoved = 0;
+        lastTouchMid = touchMidpoint(e.touches);
+        touchVelocitySamples = [];
+        lastTouchMoveTime = touchStartTime;
+        setTooltip(findNearestTarget(touchStartX, touchStartY));
+      } else if (e.touches.length >= 2) {
+        lastTouchPinchDist = touchDistance(e.touches);
+        lastTouchMid = touchMidpoint(e.touches);
+      }
+    }
+
+    function onTouchMove(e: TouchEvent) {
+      e.preventDefault();
+      const rect = canvas!.getBoundingClientRect();
+      const radius = computeOuterRadiusPx(rect.width, rect.height, useFlightStore.getState().zoomScale);
+
+      if (e.touches.length >= 2) {
+        const dist = touchDistance(e.touches);
+        if (lastTouchPinchDist > 0 && dist > 0) pendingZoomFactorRef.current *= dist / lastTouchPinchDist;
+        lastTouchPinchDist = dist;
+        const mid = touchMidpoint(e.touches);
+        pendingPanDeltaRef.current.x += (mid.x - lastTouchMid.x) / radius;
+        pendingPanDeltaRef.current.y += (mid.y - lastTouchMid.y) / radius;
+        lastTouchMid = mid;
+        return;
+      }
+
+      if (e.touches.length === 1) {
+        const t = e.touches[0];
+        const dxPx = t.clientX - lastTouchMid.x;
+        const dyPx = t.clientY - lastTouchMid.y;
+        touchMoved = Math.hypot(t.clientX - touchStartX, t.clientY - touchStartY);
+        pendingPanDeltaRef.current.x += dxPx / radius;
+        pendingPanDeltaRef.current.y += dyPx / radius;
+
+        const now = performance.now();
+        const dt = now - lastTouchMoveTime;
+        if (dt > 0) {
+          touchVelocitySamples.push({ vx: dxPx / dt, vy: dyPx / dt });
+          if (touchVelocitySamples.length > 5) touchVelocitySamples.shift();
+        }
+        lastTouchMoveTime = now;
+        lastTouchMid = { x: t.clientX, y: t.clientY };
+      }
+    }
+
+    function onTouchEnd(e: TouchEvent) {
+      e.preventDefault();
+      const durationMs = performance.now() - touchStartTime;
+      const isTap = durationMs < TAP_MAX_DURATION_MS && touchMoved < TAP_MAX_MOVEMENT_PX && e.touches.length === 0;
+
+      if (isTap && e.changedTouches.length > 0) {
+        const t = e.changedTouches[0];
+        const target = findNearestTarget(t.clientX, t.clientY);
+        if (target?.kind === 'airport') onSelectAirport?.(target.refId);
+      }
+      setTooltip(null);
+
+      if (!isTap && e.touches.length === 0 && touchVelocitySamples.length > 0) {
+        const avgVx = touchVelocitySamples.reduce((s, v) => s + v.vx, 0) / touchVelocitySamples.length;
+        const avgVy = touchVelocitySamples.reduce((s, v) => s + v.vy, 0) / touchVelocitySamples.length;
+        if (Math.hypot(avgVx, avgVy) > MOMENTUM_MIN_VELOCITY) momentumRef.current = { vx: avgVx, vy: avgVy };
+      }
+
+      if (e.touches.length === 1) lastTouchMid = touchMidpoint(e.touches);
+      else if (e.touches.length === 0) lastTouchPinchDist = 0;
+    }
+
+    canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+    canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+    canvas.addEventListener('touchend', onTouchEnd, { passive: false });
+    canvas.addEventListener('touchcancel', onTouchEnd, { passive: false });
+
     canvas.addEventListener('pointerdown', onPointerDown, { passive: false });
     canvas.addEventListener('pointermove', onPointerMove, { passive: false });
     canvas.addEventListener('pointerup', onPointerUp);
@@ -335,6 +440,10 @@ export function FlightCanvas({ onFrame, onSelectAirport }: Props) {
     window.addEventListener('keydown', onKeyDown);
 
     return () => {
+      canvas.removeEventListener('touchstart', onTouchStart);
+      canvas.removeEventListener('touchmove', onTouchMove);
+      canvas.removeEventListener('touchend', onTouchEnd);
+      canvas.removeEventListener('touchcancel', onTouchEnd);
       canvas.removeEventListener('pointerdown', onPointerDown);
       canvas.removeEventListener('pointermove', onPointerMove);
       canvas.removeEventListener('pointerup', onPointerUp);
