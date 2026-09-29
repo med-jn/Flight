@@ -219,7 +219,7 @@ export function FlightCanvas({ onFrame, onSelectAirport }: Props) {
       // Touch is handled entirely by the dedicated touch handlers below — kept fully separate
       // instead of unified through Pointer Events, since Pointer Event support/behavior for
       // touch has proven unreliable on at least one real device tested with this app.
-      if (e.pointerType !== 'mouse') return;
+      if (e.pointerType !== 'mouse') { e.preventDefault(); return; }
       e.preventDefault();
       canvas!.setPointerCapture(e.pointerId);
       activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -240,7 +240,7 @@ export function FlightCanvas({ onFrame, onSelectAirport }: Props) {
     }
 
     function onPointerMove(e: PointerEvent) {
-      if (e.pointerType !== 'mouse') return;
+      if (e.pointerType !== 'mouse') { e.preventDefault(); return; }
       if (!activePointers.has(e.pointerId)) {
         setTooltip(findNearestTarget(e.clientX, e.clientY));
         return;
@@ -279,7 +279,7 @@ export function FlightCanvas({ onFrame, onSelectAirport }: Props) {
     }
 
     function onPointerUp(e: PointerEvent) {
-      if (e.pointerType !== 'mouse') return;
+      if (e.pointerType !== 'mouse') { e.preventDefault(); return; }
       try { canvas!.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
       activePointers.delete(e.pointerId);
 
