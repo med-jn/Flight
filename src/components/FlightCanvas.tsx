@@ -330,9 +330,8 @@ export function FlightCanvas({ onFrame, onSelectAirport }: Props) {
       e.preventDefault();
     }
 
-    // --- Explicit Touch Events, entirely separate from the Pointer Event handlers above ---
-    // Touch is the oldest, most universally-supported gesture API on mobile browsers, so this
-    // is the reliable fallback when Pointer Events for touch don't behave as expected.
+    // --- Explicit Touch Events for pan/pinch-zoom, kept separate from the Pointer Event
+    // handlers above (which now only react to mouse) ---
     let touchStartTime = 0;
     let touchStartX = 0;
     let touchStartY = 0;
@@ -456,7 +455,7 @@ export function FlightCanvas({ onFrame, onSelectAirport }: Props) {
 
   return (
     <div className="flight-canvas-wrap">
-      <canvas ref={canvasRef} className="flight-canvas" tabIndex={0} />
+      <canvas ref={canvasRef} className="flight-canvas" />
       {tooltip && (
         <div className="hover-tooltip" style={{ left: tooltip.x, top: tooltip.y }}>
           <div className="hover-tooltip-name">{tooltip.name}</div>
