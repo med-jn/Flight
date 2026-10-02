@@ -500,3 +500,30 @@ html, body, #root {
     border: none;
   }
 }
+
+/* ---------- Cleaner, icon-first panel (added) ---------- */
+
+.panel-section { margin-bottom: 4px; }
+.panel-section h2 { font-size: 10px; opacity: 0.6; margin-bottom: 6px; }
+
+.layer-grid {
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+.layer-btn {
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 4px;
+  font-size: 10px;
+  text-align: center;
+}
+.layer-btn span { line-height: 1.1; }
+
+.panel-tabs .tab-label { display: none; }
+.panel-tabs button { padding: 10px; }
+@media (min-width: 861px) {
+  .panel-tabs .tab-label { display: inline; }
+}
+
+.panel-toolbar { gap: 6px; }
+.field { margin-bottom: 8px; }
