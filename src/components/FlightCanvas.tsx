@@ -315,14 +315,18 @@ export function FlightCanvas({ onFrame, onSelectAirport }: Props) {
     }
 
     function onKeyDown(e: KeyboardEvent) {
+      // Never intercept browser shortcuts (Ctrl/Cmd/Alt + anything, e.g. page zoom).
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
       const target = e.target as HTMLElement | null;
       if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
 
+      // Arrow key reveals what's in that direction: Left/Up bring offscreen content on that
+      // side into view, which means the map content itself shifts the opposite way on screen.
       switch (e.key) {
-        case 'ArrowLeft': pendingPanDeltaRef.current.x -= KEY_PAN_STEP; break;
-        case 'ArrowRight': pendingPanDeltaRef.current.x += KEY_PAN_STEP; break;
-        case 'ArrowUp': pendingPanDeltaRef.current.y -= KEY_PAN_STEP; break;
-        case 'ArrowDown': pendingPanDeltaRef.current.y += KEY_PAN_STEP; break;
+        case 'ArrowLeft': pendingPanDeltaRef.current.x += KEY_PAN_STEP; break;
+        case 'ArrowRight': pendingPanDeltaRef.current.x -= KEY_PAN_STEP; break;
+        case 'ArrowUp': pendingPanDeltaRef.current.y += KEY_PAN_STEP; break;
+        case 'ArrowDown': pendingPanDeltaRef.current.y -= KEY_PAN_STEP; break;
         case '+': case '=': pendingZoomFactorRef.current *= 1.12; break;
         case '-': pendingZoomFactorRef.current *= 0.88; break;
         default: return;
